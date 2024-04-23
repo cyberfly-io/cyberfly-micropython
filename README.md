@@ -1,6 +1,6 @@
 # cyberfly-micropython
 
-
+### Download firmware here - https://github.com/cyberfly-io/cyberfly-micropython/releases/tag/esp32-0.2
 
 ## example usage
 
