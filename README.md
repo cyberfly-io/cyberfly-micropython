@@ -5,13 +5,15 @@
 ## example usage
 
 ```python
-from data_shipper import CyberflyDataShipper
+from cyberflySdk import CyberflyClient
 import machine
 import time
 
-key_pair = {"publicKey":"37a720dcf056387df1d9c85cda3cbff55aa9084b6eaee8bb9fde20c684fd9418","secretKey":"f18adeab3f38b5531f6fcd9ae05d3fb0ea42f0314ea5b93f0d7114d14ff3daac"}
-device_id="0afcff85-5b57-4136-aa6c-2897cc5b6b88"
-client = CyberflyDataShipper(device_id=device_id, key_pair=key_pair, ssid="Abu",wifi_password="abu12345678", network_id="testnet04")
+key_pair={"publicKey":"be649fdc3e28848e83fc528729cfb0aa605ee0b50233906cb73d0121c5cdbc42",
+         "secretKey":"865d0d6cbaec24121c99d0f7a7ff8e120131682e15b4ed3f579cbac27de78483"}
+device_id="00716095-ac1e-4fe9-914e-c25cb32979fd"
+client = CyberflyClient(device_id=device_id, key_pair=key_pair, ssid="your_wifi_name",
+                             wifi_password="wifipassword", network_id="testnet04")
 
 
 @client.on_message()
