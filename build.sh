@@ -8,6 +8,8 @@ export USER_C_MODULES="${REP_MG_SRC}/micropython.cmake"
 
 rm "${REP_BASE}/firmware.bin"
 
+cp "${REP_BASE}/cyberfly_sdk/"* "${REP_ESP32}/modules/"
+
 cd "$REP_ESP32"
 
 if [ -z $NOCLEAN ]; then
