@@ -1,0 +1,13 @@
+Dans fichiers micropython/ports/rp2/CMakeLists.txt
+
+target_compile_options(${MICROPY_TARGET} PRIVATE
+    -Wall
+    -Werror
+)
+
+pour
+
+target_compile_options(${MICROPY_TARGET} PRIVATE
+    -Wall
+#    -Werror
+)

@@ -1,0 +1,12 @@
+[submodule "pico-sdk"]
+	path = pico-sdk
+	url = https://github.com/raspberrypi/pico-sdk.git
+[submodule "oryx-embedded/common"]
+	path = oryx-embedded/common
+	url = https://github.com/Oryx-Embedded/Common.git
+[submodule "oryx-embedded/cyclone_crypto"]
+	path = oryx-embedded/cyclone_crypto
+	url = https://github.com/Oryx-Embedded/CycloneCRYPTO.git
+[submodule "micropython"]
+	path = micropython
+	url = https://github.com/micropython/micropython.git
