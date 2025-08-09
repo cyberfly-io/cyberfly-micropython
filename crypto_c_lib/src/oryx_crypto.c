@@ -7,9 +7,7 @@
 #define DIGEST_BLAKE2S_LEN 32
 #define DIGEST_BLAKE2B_LEN 32
 
-const mp_rom_error_text_t LEN_INVALIDE = "len invalide";
-const mp_rom_error_text_t OPERATION_INVALIDE = "oper invalide";
-const mp_rom_error_text_t SIGNATURE_INVALIDE = "sign invalide";
+// Error messages should be provided via MP_ERROR_TEXT at raise sites.
 
 
 // const uint8_t X509_MG_EXTENSION_EXCHANGES[4] = {0x2a, 0x03, 0x04, 0x00};
@@ -27,7 +25,7 @@ static mp_obj_t python_blake2bCompute(mp_obj_t message_data_obj) {
     int res = blake2bCompute(0, 0, message_bufinfo.buf, message_bufinfo.len, digest_out, DIGEST_BLAKE2B_LEN);
 
     if(res != 0) {
-        nlr_raise(mp_obj_new_exception_msg(&mp_type_Exception, DIGEST_BLAKE2B_LEN));
+        mp_raise_msg(&mp_type_Exception, MP_ERROR_TEXT("blake2b failed"));
     }
 
     // Return bytes obj
@@ -44,7 +42,7 @@ static mp_obj_t python_ed25519GeneratePublickey(mp_obj_t privateKey_obj) {
     mp_buffer_info_t private_key_bufinfo;
     mp_get_buffer_raise(privateKey_obj, &private_key_bufinfo, MP_BUFFER_READ);
     if(private_key_bufinfo.len != ED25519_PRIVATE_KEY_LEN) {
-        nlr_raise(mp_obj_new_exception_msg(&mp_type_ValueError, LEN_INVALIDE));
+        mp_raise_ValueError(MP_ERROR_TEXT("len invalide"));
     }
 
     // Calculer cle publique
@@ -52,7 +50,7 @@ static mp_obj_t python_ed25519GeneratePublickey(mp_obj_t privateKey_obj) {
     int res = ed25519GeneratePublicKey(private_key_bufinfo.buf, cle_publique);
 
     if(res != 0) {
-        nlr_raise(mp_obj_new_exception_msg(&mp_type_Exception, OPERATION_INVALIDE));
+        mp_raise_msg(&mp_type_Exception, MP_ERROR_TEXT("oper invalide"));
     }
 
     // Return bytes obj
@@ -71,14 +69,14 @@ static mp_obj_t python_ed25519Sign(mp_obj_t privateKey_obj, mp_obj_t publicKey_o
     mp_buffer_info_t privatekey_bufinfo;
     mp_get_buffer_raise(privateKey_obj, &privatekey_bufinfo, MP_BUFFER_READ);
     if(privatekey_bufinfo.len != ED25519_PRIVATE_KEY_LEN) {
-        nlr_raise(mp_obj_new_exception_msg(&mp_type_ValueError, LEN_INVALIDE));
+        mp_raise_ValueError(MP_ERROR_TEXT("len invalide"));
     }
 
     // Charger cle publique
     mp_buffer_info_t publicKey_bufinfo;
     mp_get_buffer_raise(publicKey_obj, &publicKey_bufinfo, MP_BUFFER_READ);
     if(publicKey_bufinfo.len != ED25519_PUBLIC_KEY_LEN) {
-        nlr_raise(mp_obj_new_exception_msg(&mp_type_ValueError, LEN_INVALIDE));
+        mp_raise_ValueError(MP_ERROR_TEXT("len invalide"));
     }
 
     // Charger message
@@ -100,7 +98,7 @@ static mp_obj_t python_ed25519Sign(mp_obj_t privateKey_obj, mp_obj_t publicKey_o
 
     if(res != 0) {
         // Erreur de signature
-        nlr_raise(mp_obj_new_exception_msg(&mp_type_Exception, OPERATION_INVALIDE));
+        mp_raise_msg(&mp_type_Exception, MP_ERROR_TEXT("oper invalide"));
     }
 
     // Nouveau objet Python bytes avec la signature
@@ -118,15 +116,15 @@ static mp_obj_t python_ed25519Verify(mp_obj_t publicKey_obj, mp_obj_t signature_
     mp_buffer_info_t publicKey_bufinfo;
     mp_get_buffer_raise(publicKey_obj, &publicKey_bufinfo, MP_BUFFER_READ);
 
-    if(publicKey_bufinfo.len != 32) {
-        nlr_raise(mp_obj_new_exception_msg(&mp_type_ValueError, LEN_INVALIDE));
+    if(publicKey_bufinfo.len != ED25519_PUBLIC_KEY_LEN) {
+        mp_raise_ValueError(MP_ERROR_TEXT("len invalide"));
     }
 
     mp_buffer_info_t signature_bufinfo;
     mp_get_buffer_raise(signature_obj, &signature_bufinfo, MP_BUFFER_READ);
 
-    if(signature_bufinfo.len != 64) {
-        nlr_raise(mp_obj_new_exception_msg(&mp_type_ValueError, LEN_INVALIDE));
+    if(signature_bufinfo.len != ED25519_SIGNATURE_LEN) {
+        mp_raise_ValueError(MP_ERROR_TEXT("len invalide"));
     }
 
     mp_buffer_info_t message_bufinfo;
@@ -144,7 +142,7 @@ static mp_obj_t python_ed25519Verify(mp_obj_t publicKey_obj, mp_obj_t signature_
 
     if(res != 0) {
         // Erreur de signature
-        nlr_raise(mp_obj_new_exception_msg(&mp_type_Exception, SIGNATURE_INVALIDE));
+        mp_raise_msg(&mp_type_Exception, MP_ERROR_TEXT("sign invalide"));
     }
 
     return mp_const_none;

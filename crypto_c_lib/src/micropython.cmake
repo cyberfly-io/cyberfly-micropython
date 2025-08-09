@@ -45,6 +45,14 @@ target_include_directories(usermod_oryx_lib PUBLIC
     ${ORYX_LIB}/cyclone_crypto
 )
 
+# Relax format warnings for this third-party library so they are not treated as errors
+if (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(usermod_oryx_lib PUBLIC
+        -Wno-error=format=
+        -Wno-error=format
+    )
+endif()
+
 add_library(usermod_oryx_crypto INTERFACE)
 
 target_sources(usermod_oryx_crypto INTERFACE

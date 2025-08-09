@@ -5,6 +5,8 @@ import auth
 import json
 import cntptime
 import machine
+from module_registry import ModuleRegistry
+from actuators.led import LedModule
 
 class CyberflyClient:
     def __init__(self, device_id, key_pair, ssid, wifi_password, network_id = "mainnet01", node_url="https://node.cyberfly.io"):
@@ -23,10 +25,34 @@ class CyberflyClient:
         self.topic = device_id
         self.mqtt_client.set_callback(self.on_received)
         self.device_info = {}
+        # optional module system for dynamic read/execute
+        try:
+            self.modules = ModuleRegistry()
+            # Auto-register available modules from actuators/ and sensors/
+            self.modules.register_all()
+            # Ensure a basic LED exists as a fallback
+            if not self.modules.get('led'):
+                self.modules.add(LedModule("led", pin=2, active_high=True))
+        except Exception:
+            # Safe if support files not present during import-time checks
+            self.modules = None
         self.connect_wifi(ssid, wifi_password)
         self.set_ntptime()
         self.update_device()
         self.connect_mqtt()
+
+    def register_modules(self, *mods):
+        if self.modules is None:
+            self.modules = ModuleRegistry()
+        self.modules.add(*mods)
+
+    def read_all_modules(self):
+        if not self.modules:
+            return {}
+        out = {}
+        for m in self.modules.all():
+            out[m.id] = m.read()
+        return out
 
     def set_ntptime(self):
         print("Set NTP time")
@@ -94,9 +120,24 @@ class CyberflyClient:
                 try:
                     if device_exec.get('update_device'):
                         self.update_device()
-                    self.caller(device_exec)
+                    # dynamic dispatch: read/execute/read_all
+                    result = None
+                    action = (device_exec.get('action') or '').lower()
+                    module_id = device_exec.get('module')
+                    if action and self.modules:
+                        if action == 'read' and module_id:
+                            result = self.modules.read(module_id)
+                        elif action == 'execute' and module_id:
+                            result = self.modules.execute(module_id, device_exec.get('cmd'), device_exec.get('params'))
+                        elif action == 'read_all':
+                            result = self.read_all_modules()
+                    # Fallback to user callback if no dynamic action handled
+                    if result is None:
+                        self.caller(device_exec)
+                        result = {"handled": "callback"}
                     if response_topic:
-                        signed = shipper_utils.make_cmd({"info": "success"}, self.key_pair)
+                        payload = {"info": "success", "result": result}
+                        signed = shipper_utils.make_cmd(payload, self.key_pair)
                         shipper_utils.mqtt_publish(self.mqtt_client, response_topic, signed)
                 except Exception as e:
                     signed = shipper_utils.make_cmd({"info": "error"}, self.key_pair)

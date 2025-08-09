@@ -32,6 +32,7 @@
 #define TRACE_LEVEL CRYPTO_TRACE_LEVEL
 
 //Dependencies
+#include <inttypes.h>
 #include "core/crypto.h"
 #include "encoding/oid.h"
 #include "debug.h"
@@ -614,7 +615,7 @@ char_t *oidToString(const uint8_t *oid, size_t oidLen, char_t *str,
          if((oid[i] & OID_MORE_FLAG) == 0)
          {
             //Dump current value
-            n = osSprintf(temp, ".%" PRIu32, value);
+            n = osSprintf(temp, ".%" PRIu32, (uint32_t)value);
 
             //Sanity check
             if(n <= maxStrLen)
