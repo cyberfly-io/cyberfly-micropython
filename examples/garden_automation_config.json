@@ -1,0 +1,257 @@
+{
+  "config_type": "sensors",
+  "description": "Garden automation system for plant care, irrigation, and environmental monitoring",
+  "sensors": [
+    {
+      "sensor_id": "soil_environment",
+      "sensor_type": "sht31d",
+      "inputs": {
+        "address": 68
+      },
+      "enabled": true,
+      "alias": "Soil Environment",
+      "description": "High-precision soil temperature and humidity monitoring"
+    },
+    {
+      "sensor_id": "ambient_conditions",
+      "sensor_type": "bme280",
+      "inputs": {
+        "address": 118
+      },
+      "enabled": true,
+      "alias": "Ambient Conditions",
+      "description": "Ambient temperature, humidity, and atmospheric pressure"
+    },
+    {
+      "sensor_id": "water_probe",
+      "sensor_type": "ds18b20",
+      "inputs": {
+        "pin_no": 18,
+        "unit": "celsius"
+      },
+      "enabled": true,
+      "alias": "Water Temperature",
+      "description": "Waterproof temperature probe for irrigation water monitoring"
+    },
+    {
+      "sensor_id": "soil_moisture_1",
+      "sensor_type": "adc",
+      "inputs": {
+        "pin_no": 36,
+        "min_value": 0,
+        "max_value": 4095,
+        "units": "moisture_percent"
+      },
+      "enabled": true,
+      "alias": "Soil Moisture Zone 1",
+      "description": "Capacitive soil moisture sensor for planting zone 1"
+    },
+    {
+      "sensor_id": "soil_moisture_2",
+      "sensor_type": "adc",
+      "inputs": {
+        "pin_no": 39,
+        "min_value": 0,
+        "max_value": 4095,
+        "units": "moisture_percent"
+      },
+      "enabled": true,
+      "alias": "Soil Moisture Zone 2",
+      "description": "Capacitive soil moisture sensor for planting zone 2"
+    },
+    {
+      "sensor_id": "light_intensity",
+      "sensor_type": "bh1750",
+      "inputs": {
+        "address": 35
+      },
+      "enabled": true,
+      "alias": "Light Intensity",
+      "description": "Accurate light level monitoring for plant growth optimization"
+    },
+    {
+      "sensor_id": "uv_light",
+      "sensor_type": "photoresistor",
+      "inputs": {
+        "pin_no": 34,
+        "dark_threshold": 2000,
+        "bright_threshold": 30000
+      },
+      "enabled": true,
+      "alias": "UV Light Monitor",
+      "description": "UV light monitoring for plant health assessment"
+    },
+    {
+      "sensor_id": "water_tank_level",
+      "sensor_type": "hc_sr04",
+      "inputs": {
+        "trigger_pin": 5,
+        "echo_pin": 18,
+        "max_distance": 2.0,
+        "threshold_distance": 0.2
+      },
+      "enabled": true,
+      "alias": "Water Tank Level",
+      "description": "Ultrasonic water tank level monitoring"
+    },
+    {
+      "sensor_id": "rain_detection",
+      "sensor_type": "water",
+      "inputs": {
+        "pin_no": 14
+      },
+      "enabled": true,
+      "alias": "Rain Sensor",
+      "description": "Rain detection to prevent overwatering"
+    },
+    {
+      "sensor_id": "greenhouse_door",
+      "sensor_type": "hall",
+      "inputs": {
+        "pin_no": 13
+      },
+      "enabled": true,
+      "alias": "Greenhouse Door",
+      "description": "Magnetic sensor for greenhouse door status monitoring"
+    },
+    {
+      "sensor_id": "ph_sensor",
+      "sensor_type": "ads1115",
+      "inputs": {
+        "address": 72,
+        "channel": 0,
+        "gain": 1
+      },
+      "enabled": true,
+      "alias": "Soil pH Monitor",
+      "description": "High-resolution pH monitoring for soil analysis"
+    },
+    {
+      "sensor_id": "irrigation_valve_1",
+      "sensor_type": "dout",
+      "inputs": {
+        "pin_no": 2,
+        "initial_value": 0
+      },
+      "enabled": true,
+      "alias": "Irrigation Valve 1",
+      "description": "Solenoid valve control for zone 1 irrigation"
+    },
+    {
+      "sensor_id": "irrigation_valve_2",
+      "sensor_type": "dout",
+      "inputs": {
+        "pin_no": 4,
+        "initial_value": 0
+      },
+      "enabled": true,
+      "alias": "Irrigation Valve 2",
+      "description": "Solenoid valve control for zone 2 irrigation"
+    },
+    {
+      "sensor_id": "grow_light",
+      "sensor_type": "dout",
+      "inputs": {
+        "pin_no": 16,
+        "initial_value": 0
+      },
+      "enabled": true,
+      "alias": "Grow Light Control",
+      "description": "LED grow light control for supplemental lighting"
+    },
+    {
+      "sensor_id": "manual_button",
+      "sensor_type": "button",
+      "inputs": {
+        "pin_no": 0,
+        "pull_up": true,
+        "debounce_ms": 50
+      },
+      "enabled": true,
+      "alias": "Manual Water Button",
+      "description": "Manual irrigation trigger button"
+    },
+    {
+      "sensor_id": "garden_display",
+      "sensor_type": "lcd1602",
+      "inputs": {
+        "address": 39,
+        "columns": 16,
+        "rows": 2,
+        "text": "Garden Monitor\\nActive"
+      },
+      "enabled": true,
+      "alias": "Garden Display",
+      "description": "LCD display for garden status and information"
+    },
+    {
+      "sensor_id": "system_status",
+      "sensor_type": "temp_internal",
+      "enabled": true,
+      "alias": "System Status",
+      "description": "System health monitoring"
+    }
+  ],
+  "irrigation_schedule": {
+    "zone_1": {
+      "morning_time": "06:30",
+      "evening_time": "18:30",
+      "duration_minutes": 15,
+      "moisture_threshold": 30
+    },
+    "zone_2": {
+      "morning_time": "06:45",
+      "evening_time": "18:45", 
+      "duration_minutes": 20,
+      "moisture_threshold": 35
+    }
+  },
+  "automation_rules": [
+    {
+      "name": "Smart Irrigation Zone 1",
+      "trigger": "soil_moisture_1 < 30% AND rain_detection = 0",
+      "action": "Activate irrigation_valve_1 for scheduled duration"
+    },
+    {
+      "name": "Smart Irrigation Zone 2",
+      "trigger": "soil_moisture_2 < 35% AND rain_detection = 0",
+      "action": "Activate irrigation_valve_2 for scheduled duration"
+    },
+    {
+      "name": "Supplemental Lighting",
+      "trigger": "light_intensity < 5000 AND time BETWEEN 06:00-18:00",
+      "action": "Activate grow_light for optimal growth"
+    },
+    {
+      "name": "Manual Watering",
+      "trigger": "manual_button = 1",
+      "action": "Run irrigation cycle for all zones"
+    },
+    {
+      "name": "Rain Override",
+      "trigger": "rain_detection = 1",
+      "action": "Disable all irrigation and update schedule"
+    },
+    {
+      "name": "Low Water Alert",
+      "trigger": "water_tank_level < 20%",
+      "action": "Send notification to refill water tank"
+    }
+  ],
+  "plant_care_settings": {
+    "optimal_soil_moisture": {
+      "vegetables": "40-60%",
+      "herbs": "30-50%",
+      "succulents": "20-30%"
+    },
+    "light_requirements": {
+      "full_sun": "> 10000 lux",
+      "partial_shade": "5000-10000 lux",
+      "shade": "< 5000 lux"
+    },
+    "temperature_ranges": {
+      "cool_season": "15-20°C",
+      "warm_season": "20-30°C"
+    }
+  }
+}

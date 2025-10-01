@@ -1,5 +1,10 @@
 import os
-from module_base import DeviceModule
+try:
+    # When imported as a package (recommended)
+    from .module_base import DeviceModule
+except Exception:
+    # Fallback for flat copy into modules/ without package context
+    from module_base import DeviceModule  # type: ignore
 
 
 class ModuleRegistry:
@@ -49,7 +54,11 @@ class ModuleRegistry:
                 modname = fname[:-3]
                 fqmn = pkg + '.' + modname
                 try:
-                    top = __import__(fqmn)
+                    try:
+                        # Prefer relative import within package
+                        top = __import__(__package__ + '.' + fqmn) if __package__ else __import__(fqmn)
+                    except Exception:
+                        top = __import__(fqmn)
                     comp = fqmn.split('.')
                     mod = top
                     for c in comp[1:]:

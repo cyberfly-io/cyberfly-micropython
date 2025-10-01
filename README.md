@@ -27,3 +27,21 @@ while 1:
     client.check_msg()
     time.sleep(1)
 ```
+
+
+### Build from source
+
+git clone -b v5.4.2 --recursive https://github.com/espressif/esp-idf.git
+
+cd esp-idf
+
+git checkout v5.4.2
+
+git submodule update --init --recursive
+
+cd esp-idf
+
+./install.sh esp32 
+
+. ./export.sh
+

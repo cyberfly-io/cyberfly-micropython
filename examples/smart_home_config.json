@@ -1,0 +1,173 @@
+{
+  "config_type": "sensors",
+  "description": "Complete smart home automation with environmental monitoring, security, and user controls",
+  "sensors": [
+    {
+      "sensor_id": "living_room_climate",
+      "sensor_type": "bme280",
+      "inputs": {
+        "address": 118
+      },
+      "enabled": true,
+      "alias": "Living Room Climate",
+      "description": "Temperature, humidity, and pressure monitoring for climate control"
+    },
+    {
+      "sensor_id": "outdoor_weather",
+      "sensor_type": "dht22", 
+      "inputs": {
+        "pin_no": 4
+      },
+      "enabled": true,
+      "alias": "Outdoor Weather Station",
+      "description": "External temperature and humidity for weather monitoring"
+    },
+    {
+      "sensor_id": "air_quality",
+      "sensor_type": "ccs811",
+      "inputs": {
+        "address": 90,
+        "temperature_offset": 0
+      },
+      "enabled": true,
+      "alias": "Indoor Air Quality",
+      "description": "CO2 and TVOC monitoring for air quality management"
+    },
+    {
+      "sensor_id": "ambient_light",
+      "sensor_type": "bh1750",
+      "inputs": {
+        "address": 35
+      },
+      "enabled": true,
+      "alias": "Ambient Light Sensor",
+      "description": "Light level monitoring for automatic lighting control"
+    },
+    {
+      "sensor_id": "front_door_motion",
+      "sensor_type": "pir",
+      "inputs": {
+        "pin_no": 12
+      },
+      "enabled": true,
+      "alias": "Front Door Motion",
+      "description": "Motion detection for security and automatic lighting"
+    },
+    {
+      "sensor_id": "garage_door_status",
+      "sensor_type": "hall",
+      "inputs": {
+        "pin_no": 13
+      },
+      "enabled": true,
+      "alias": "Garage Door Sensor",
+      "description": "Magnetic sensor to detect garage door open/close status"
+    },
+    {
+      "sensor_id": "basement_flood",
+      "sensor_type": "water",
+      "inputs": {
+        "pin_no": 14
+      },
+      "enabled": true,
+      "alias": "Basement Flood Detector",
+      "description": "Water leak detection for basement flooding prevention"
+    },
+    {
+      "sensor_id": "manual_override",
+      "sensor_type": "button",
+      "inputs": {
+        "pin_no": 0,
+        "pull_up": true,
+        "debounce_ms": 50
+      },
+      "enabled": true,
+      "alias": "Manual Override Button",
+      "description": "Physical button for manual system override"
+    },
+    {
+      "sensor_id": "thermostat_control",
+      "sensor_type": "rotary_encoder",
+      "inputs": {
+        "clk_pin": 16,
+        "dt_pin": 17
+      },
+      "enabled": true,
+      "alias": "Thermostat Dial",
+      "description": "Rotary encoder for temperature setpoint adjustment"
+    },
+    {
+      "sensor_id": "brightness_control",
+      "sensor_type": "potentiometer",
+      "inputs": {
+        "pin_no": 39,
+        "min_value": 0,
+        "max_value": 100,
+        "units": "percent"
+      },
+      "enabled": true,
+      "alias": "Brightness Control",
+      "description": "Dimmer control for lighting brightness adjustment"
+    },
+    {
+      "sensor_id": "main_display",
+      "sensor_type": "lcd1602",
+      "inputs": {
+        "address": 39,
+        "columns": 16,
+        "rows": 2,
+        "text": "Smart Home Hub\\nOnline"
+      },
+      "enabled": true,
+      "alias": "Main Display",
+      "description": "LCD display for system status and information"
+    },
+    {
+      "sensor_id": "status_led",
+      "sensor_type": "dout",
+      "inputs": {
+        "pin_no": 2,
+        "initial_value": 0
+      },
+      "enabled": true,
+      "alias": "Status Indicator",
+      "description": "LED indicator for system status and alerts"
+    },
+    {
+      "sensor_id": "cpu_temperature",
+      "sensor_type": "temp_internal",
+      "enabled": true,
+      "alias": "System Temperature",
+      "description": "Internal CPU temperature monitoring"
+    },
+    {
+      "sensor_id": "system_monitor",
+      "sensor_type": "system_info",
+      "enabled": true,
+      "alias": "System Monitor",
+      "description": "System resource monitoring and diagnostics"
+    }
+  ],
+  "automation_rules": [
+    {
+      "name": "Auto Lighting",
+      "trigger": "ambient_light < 50 OR front_door_motion = 1",
+      "action": "Set brightness based on time and occupancy"
+    },
+    {
+      "name": "Climate Control", 
+      "trigger": "living_room_climate.temperature != thermostat_setpoint",
+      "action": "Adjust HVAC system to maintain temperature"
+    },
+    {
+      "name": "Security Alert",
+      "trigger": "front_door_motion = 1 AND time > 22:00",
+      "action": "Send notification and activate status_led"
+    },
+    {
+      "name": "Flood Alert",
+      "trigger": "basement_flood = 1",
+      "action": "Emergency notification and water shutoff"
+    }
+  ]
+}

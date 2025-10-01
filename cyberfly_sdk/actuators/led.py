@@ -3,7 +3,10 @@ try:
 except Exception:
     machine = None
 
-from module_base import DeviceModule
+try:
+    from ..module_base import DeviceModule
+except Exception:
+    from module_base import DeviceModule  # fallback when not used as a package
 
 
 class LedModule(DeviceModule):
