@@ -35,7 +35,7 @@ from .types.base import SensorReading, BaseSensor, I2CBaseSensor
 
 # Import sensor implementations from modular files
 from .types.basic_sensors import (
-    InternalTempSensor, DigitalInputSensor, AnalogInputSensor, SystemInfoSensor
+    InternalTempSensor, DigitalInputSensor, AnalogInputSensor, SystemInfoSensor, PinStatusSensor
 )
 
 from .types.environmental_sensors import (
@@ -221,6 +221,19 @@ class SensorManager:
                 readings = self.read_all_sensors()
                 return {"readings": [r.to_dict() for r in readings], "count": len(readings)}
             
+            elif action == 'read_pin_status':
+                # Handle pin status reading request
+                sensor_id = command_data.get('sensor_id', 'pin_status')
+                if sensor_id in self.sensors:
+                    reading = self.read_sensor(sensor_id)
+                    return reading.to_dict()
+                else:
+                    return {
+                        "status": "error",
+                        "error": f"Pin status sensor '{sensor_id}' not configured",
+                        "hint": "Add a pin_status sensor to enable pin monitoring"
+                    }
+            
             elif action == 'enable_sensor':
                 success = self.enable_sensor(command_data['sensor_id'])
                 return {"status": "success" if success else "error"}
@@ -283,6 +296,7 @@ def _create_sensor(sensor_type, inputs):
         'digital_input': DigitalInputSensor,
         'analog_input': AnalogInputSensor,
         'system_info': SystemInfoSensor,
+        'pin_status': PinStatusSensor,
         
         # Environmental sensors
         'dht22': DHT22Sensor,
@@ -327,7 +341,7 @@ __all__ = [
     # Base classes
     'BaseSensor', 'I2CBaseSensor',
     # Basic sensors
-    'InternalTempSensor', 'DigitalInputSensor', 'AnalogInputSensor', 'SystemInfoSensor',
+    'InternalTempSensor', 'DigitalInputSensor', 'AnalogInputSensor', 'SystemInfoSensor', 'PinStatusSensor',
     # Environmental sensors
     'DHT22Sensor', 'DHT11Sensor', 'BMP280Sensor', 'BME280Sensor', 'BME680Sensor', 'CCS811Sensor',
     # Light sensors

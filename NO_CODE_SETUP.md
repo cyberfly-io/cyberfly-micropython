@@ -145,6 +145,25 @@ Send sensor configuration JSON:
   - Required: `clk_pin`, `dt_pin` (GPIO numbers)
   - Returns: position, clk_state, dt_state
 
+### GPIO Pin Monitoring
+- **`pin_status`** - Monitor GPIO pin states for dashboard
+  - Required: Either `pin_no` (single pin) OR `pins` (array of pin numbers)
+  - Optional: `mode` ("auto", "input", "output"), `pull_mode` ("none", "up", "down")
+  - Returns: pin states, configuration status, total pins, configured pins
+  - Example:
+    ```json
+    {
+      "sensor_id": "gpio_monitor",
+      "sensor_type": "pin_status",
+      "inputs": {
+        "pins": [0, 2, 4, 5, 12, 13, 14, 15],
+        "mode": "auto",
+        "pull_mode": "none"
+      },
+      "alias": "GPIO Dashboard Monitor"
+    }
+    ```
+
 ### Analog Sensors with Calibration
 - **`potentiometer`** - Variable resistor with scaling
   - Required: `pin_no` (ADC-capable GPIO)
@@ -177,6 +196,12 @@ Once configured, the device automatically handles these commands from the IoT pl
 
 // Read specific sensor
 {"sensor_command": {"action": "read", "sensor_id": "temp1"}}
+
+// Read GPIO pin status (auto-creates sensor if needed)
+{"sensor_command": {"action": "read_pin_status"}}
+
+// Read specific pin status sensor
+{"sensor_command": {"action": "read_pin_status", "sensor_id": "gpio_monitor"}}
 ```
 
 ### Control Output Devices
@@ -206,6 +231,55 @@ Once configured, the device automatically handles these commands from the IoT pl
 ### Get Device Status
 ```json
 {"sensor_command": {"action": "status"}}
+```
+
+### Dashboard Commands
+```json
+// Publish GPIO pin status to dashboard
+{"pin_command": {"action": "read_status"}}
+
+// Publish complete dashboard summary (sensors + pins + system info)
+{"pin_command": {"action": "dashboard_update"}}
+
+// Read specific pin monitor
+{"sensor_command": {"action": "read", "sensor_id": "gpio_monitor"}}
+```
+
+## 📊 Dashboard Features
+
+The system provides comprehensive dashboard data for real-time monitoring:
+
+### Pin Status Dashboard
+Automatically monitors and reports GPIO pin states:
+- **Pin Values**: Current HIGH/LOW state of each pin
+- **Pin Modes**: Input/Output configuration
+- **Pin Status**: Configuration success/error status
+- **Auto-Detection**: Automatically detects available pins
+- **Real-time Updates**: Continuous monitoring and reporting
+
+### Dashboard Data Structure
+```json
+{
+  "device_id": "your_device_id",
+  "timestamp": 1696147200,
+  "sensors": {
+    "count": 5,
+    "readings": [...]
+  },
+  "pins": {
+    "total_pins": 15,
+    "configured_pins": 12,
+    "error_pins": 3,
+    "pins": {
+      "pin_0": {"pin_number": 0, "mode": "input", "value": 1, "state": "HIGH", "status": "success"},
+      "pin_2": {"pin_number": 2, "mode": "output", "value": 0, "state": "LOW", "status": "success"}
+    }
+  },
+  "system": {
+    "free_memory": 45000,
+    "uptime_seconds": 3600
+  }
+}
 ```
 
 ## 🔄 Automatic Features

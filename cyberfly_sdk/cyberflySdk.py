@@ -3,6 +3,7 @@ import shipper_utils
 import api
 import auth
 import cntptime
+import time
 from module_registry import ModuleRegistry
 from actuators.led import LedModule
 from sensors import SensorManager, SensorConfig
@@ -181,6 +182,47 @@ class CyberflyClient:
         """Process a sensor command from the IoT platform."""
         if not self.sensor_manager:
             return {"error": "Sensor manager not available"}
+        
+        # Check for read_pin_status command with auto-creation
+        action = command.get('action')
+        if action == 'read_pin_status':
+            # Auto-create pin status sensor if not exists
+            sensor_id = command.get('sensor_id', 'pin_status')
+            if sensor_id not in self.sensor_manager.sensors:
+                print(f"Auto-creating pin status sensor '{sensor_id}'...")
+                # Create with default common GPIO pins
+                default_pins = [0, 2, 4, 5, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 23]
+                success = self.add_sensor(
+                    sensor_id=sensor_id,
+                    sensor_type="pin_status",
+                    inputs={"pins": default_pins, "mode": "auto"},
+                    alias="GPIO Pin Status Monitor"
+                )
+                if not success:
+                    return {
+                        "status": "error",
+                        "error": "Failed to create pin status sensor",
+                        "action": action
+                    }
+            
+            # Read and return pin status
+            reading = self.read_sensor(sensor_id)
+            if reading.get('status') == 'success':
+                return {
+                    "status": "success",
+                    "action": action,
+                    "sensor_id": sensor_id,
+                    "data": reading.get('data', {}),
+                    "timestamp": reading.get('timestamp')
+                }
+            else:
+                return {
+                    "status": "error",
+                    "error": reading.get('error', 'Unknown error'),
+                    "action": action
+                }
+        
+        # Process other sensor commands through sensor manager
         return self.sensor_manager.process_command(command)
     
     def _save_sensor_configs(self, configs):
@@ -220,6 +262,100 @@ class CyberflyClient:
             self.publish(publish_topic, {"sensors": readings, "count": len(readings)})
             return True
         return False
+    
+    def publish_pin_status(self, pin_sensor_id="pin_status", topic=None):
+        """Publish GPIO pin status to the dashboard."""
+        if not self.sensor_manager:
+            return False
+        
+        try:
+            # Check if pin status sensor exists, create if not
+            if pin_sensor_id not in self.sensor_manager.sensors:
+                print(f"Pin status sensor '{pin_sensor_id}' not found, creating default...")
+                # Create a default pin status sensor for common GPIO pins
+                # These are commonly used pins on ESP32/RP2040 platforms
+                default_pins = [0, 2, 4, 5, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 23]
+                success = self.add_sensor(
+                    sensor_id=pin_sensor_id,
+                    sensor_type="pin_status", 
+                    inputs={"pins": default_pins, "mode": "auto"},
+                    alias="GPIO Pin Status Monitor"
+                )
+                if not success:
+                    print("Failed to create default pin status sensor")
+                    return False
+            
+            # Read pin status
+            reading = self.read_sensor(pin_sensor_id)
+            if reading.get('status') == 'success':
+                publish_topic = topic or f"{self.topic}/dashboard/pin_status"
+                
+                # Format data for dashboard consumption
+                dashboard_data = {
+                    "device_id": self.device_id,
+                    "timestamp": reading['data'].get('timestamp'),
+                    "pin_summary": {
+                        "total_pins": reading['data'].get('total_pins', 0),
+                        "configured_pins": reading['data'].get('configured_pins', 0),
+                        "error_pins": reading['data'].get('error_pins', 0)
+                    },
+                    "pins": reading['data'].get('pins', {}),
+                    "status": "success"
+                }
+                
+                self.publish(publish_topic, dashboard_data)
+                return True
+            else:
+                print(f"Failed to read pin status: {reading.get('error', 'unknown error')}")
+                return False
+                
+        except Exception as e:
+            print(f"Error publishing pin status: {e}")
+            return False
+    
+    def publish_dashboard_summary(self, topic=None):
+        """Publish comprehensive dashboard data including sensors and pin status."""
+        try:
+            # Get all sensor readings
+            sensor_readings = self.read_all_sensors()
+            
+            # Get pin status
+            pin_status = None
+            try:
+                pin_reading = self.read_sensor("pin_status")
+                if pin_reading.get('status') == 'success':
+                    pin_status = pin_reading['data']
+            except:
+                pass  # Pin status sensor may not be configured
+            
+            # Get system info if available
+            system_info = None
+            try:
+                sys_reading = self.read_sensor("system_info")
+                if sys_reading.get('status') == 'success':
+                    system_info = sys_reading['data']
+            except:
+                pass
+            
+            dashboard_data = {
+                "device_id": self.device_id,
+                "timestamp": time.time(),
+                "sensors": {
+                    "count": len(sensor_readings),
+                    "readings": sensor_readings
+                },
+                "pins": pin_status,
+                "system": system_info,
+                "status": "success"
+            }
+            
+            publish_topic = topic or f"{self.topic}/dashboard/summary"
+            self.publish(publish_topic, dashboard_data)
+            return True
+            
+        except Exception as e:
+            print(f"Error publishing dashboard summary: {e}")
+            return False
 
     def read_all_modules(self):
         if not self.modules:

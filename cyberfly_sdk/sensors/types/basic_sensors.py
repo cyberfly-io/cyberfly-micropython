@@ -159,3 +159,158 @@ class SystemInfoSensor(BaseSensor):
             }
         except Exception as e:
             raise Exception(f"Failed to read system info: {e}")
+
+class PinStatusSensor(BaseSensor):
+    """GPIO pin status sensor for dashboard monitoring.
+    
+    Monitors the state of specified GPIO pins and reports their current values.
+    Supports both input and output pins, with optional pin configuration.
+    """
+    
+    def __init__(self, inputs):
+        super().__init__(inputs)
+        
+        # Support both single pin and multiple pins
+        pin_no = inputs.get('pin_no')
+        pins = inputs.get('pins', [])
+        
+        if pin_no is not None:
+            pins = [pin_no]
+        elif not pins:
+            raise ValueError("Either 'pin_no' or 'pins' list required for pin status sensor")
+        
+        self.pins_config = []
+        
+        for pin_num in pins:
+            try:
+                pin_num = int(pin_num)
+                pin_mode = inputs.get('mode', 'auto')  # auto, input, output
+                pull_mode = inputs.get('pull_mode', 'none')  # none, up, down
+                
+                pin_config = {
+                    'pin_number': pin_num,
+                    'mode': pin_mode,
+                    'pin_object': None,
+                    'configured': False
+                }
+                
+                # Try to initialize pin based on mode
+                if pin_mode == 'input' or pin_mode == 'auto':
+                    try:
+                        if pull_mode == 'up':
+                            pin_obj = Pin(pin_num, Pin.IN, Pin.PULL_UP)
+                        elif pull_mode == 'down':
+                            pin_obj = Pin(pin_num, Pin.IN, Pin.PULL_DOWN)
+                        else:
+                            pin_obj = Pin(pin_num, Pin.IN)
+                        pin_config['pin_object'] = pin_obj
+                        pin_config['mode'] = 'input'
+                        pin_config['configured'] = True
+                    except Exception as e:
+                        if pin_mode == 'auto':
+                            # Try output mode
+                            try:
+                                pin_obj = Pin(pin_num, Pin.OUT)
+                                pin_config['pin_object'] = pin_obj
+                                pin_config['mode'] = 'output'
+                                pin_config['configured'] = True
+                            except:
+                                pin_config['error'] = f"Pin {pin_num} unavailable: {e}"
+                        else:
+                            pin_config['error'] = f"Failed to configure pin {pin_num} as input: {e}"
+                
+                elif pin_mode == 'output':
+                    try:
+                        pin_obj = Pin(pin_num, Pin.OUT)
+                        pin_config['pin_object'] = pin_obj
+                        pin_config['configured'] = True
+                    except Exception as e:
+                        pin_config['error'] = f"Failed to configure pin {pin_num} as output: {e}"
+                
+                self.pins_config.append(pin_config)
+                
+            except Exception as e:
+                # Add failed pin to config for reporting
+                self.pins_config.append({
+                    'pin_number': pin_num,
+                    'mode': 'error',
+                    'pin_object': None,
+                    'configured': False,
+                    'error': f"Invalid pin configuration: {e}"
+                })
+    
+    def read(self):
+        """Read the status of all configured pins."""
+        try:
+            pin_states = {}
+            summary = {
+                'total_pins': len(self.pins_config),
+                'configured_pins': 0,
+                'error_pins': 0,
+                'pins': {}
+            }
+            
+            for pin_config in self.pins_config:
+                pin_num = pin_config['pin_number']
+                pin_data = {
+                    'pin_number': pin_num,
+                    'mode': pin_config['mode'],
+                    'configured': pin_config['configured']
+                }
+                
+                if pin_config['configured'] and pin_config['pin_object']:
+                    try:
+                        # Read pin value
+                        value = pin_config['pin_object'].value()
+                        pin_data['value'] = value
+                        pin_data['state'] = 'HIGH' if value else 'LOW'
+                        pin_data['status'] = 'success'
+                        summary['configured_pins'] += 1
+                    except Exception as e:
+                        pin_data['status'] = 'read_error'
+                        pin_data['error'] = str(e)
+                        summary['error_pins'] += 1
+                else:
+                    pin_data['status'] = 'configuration_error'
+                    pin_data['error'] = pin_config.get('error', 'Unknown configuration error')
+                    summary['error_pins'] += 1
+                
+                summary['pins'][f'pin_{pin_num}'] = pin_data
+            
+            # Add timestamp for dashboard
+            summary['timestamp'] = time.time()
+            summary['readable_time'] = time.localtime()
+            
+            return summary
+            
+        except Exception as e:
+            raise Exception(f"Failed to read pin status: {e}")
+    
+    def set_pin_output(self, pin_number, value):
+        """Set output value for a specific pin (if configured as output)."""
+        try:
+            for pin_config in self.pins_config:
+                if pin_config['pin_number'] == pin_number:
+                    if pin_config['configured'] and pin_config['mode'] == 'output':
+                        pin_config['pin_object'].value(1 if value else 0)
+                        return True
+                    else:
+                        raise Exception(f"Pin {pin_number} not configured as output")
+            raise Exception(f"Pin {pin_number} not found")
+        except Exception as e:
+            raise Exception(f"Failed to set pin {pin_number}: {e}")
+    
+    def get_pin_info(self):
+        """Get configuration information for all pins."""
+        return {
+            'total_pins': len(self.pins_config),
+            'pin_configurations': [
+                {
+                    'pin_number': cfg['pin_number'],
+                    'mode': cfg['mode'],
+                    'configured': cfg['configured'],
+                    'error': cfg.get('error')
+                }
+                for cfg in self.pins_config
+            ]
+        }
