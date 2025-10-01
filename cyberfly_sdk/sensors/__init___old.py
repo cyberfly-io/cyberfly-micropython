@@ -1,54 +1,20 @@
 """
-CyberFly MicroPython Sensor Management System
-
-This module provides a comprehensive sensor management system with support for:
-- 30+ sensor types across multiple categories  
-- Runtime sensor configuration and management
-- BLE provisioning integration  
-- IoT platform compatibility
-- Real I2C implementations (no more mocks!)
-
-Sensor Categories:
-- Basic: Digital/analog inputs, internal sensors, system info
-- Environmental: DHT, BMP/BME series, air quality sensors
-- Light: Ambient light, color sensors, optical detection
-- Motion: PIR, ultrasonic, accelerometers, magnetic sensors
-
-All sensors now have proper hardware implementations with fallback support.
+Sensor management module for CyberFly MicroPython SDK.
 """
 
-import time
-import gc
 try:
     import ujson as json
 except ImportError:
     import json
+
+import time
+import gc
 from micropython import const
 
 # Sensor status constants
 STATUS_SUCCESS = const(0)
 STATUS_ERROR = const(1)
 STATUS_DISABLED = const(2)
-
-# Import base classes
-from .types.base import SensorReading, BaseSensor, I2CBaseSensor
-
-# Import sensor implementations from modular files
-from .types.basic_sensors import (
-    InternalTempSensor, DigitalInputSensor, AnalogInputSensor, SystemInfoSensor
-)
-
-from .types.environmental_sensors import (
-    DHT22Sensor, DHT11Sensor, BMP280Sensor, BME280Sensor, BME680Sensor, CCS811Sensor
-)
-
-from .types.light_sensors import (
-    BH1750Sensor, TSL2561Sensor, APDS9960Sensor
-)
-
-from .types.motion_sensors import (
-    PIRSensor, UltrasonicSensor, MPU6050Sensor, HallEffectSensor, DS18B20Sensor
-)
 
 class SensorConfig:
     """Configuration for a sensor instance."""
@@ -80,97 +46,117 @@ class SensorConfig:
             alias=data.get('alias')
         )
 
+class SensorReading:
+    """Standardized sensor reading with metadata."""
+    __slots__ = ('sensor_id', 'sensor_type', 'data', 'timestamp', 'status', 'error')
+    
+    def __init__(self, sensor_id, sensor_type, data=None, timestamp=None, status="success", error=None):
+        import time
+        self.sensor_id = str(sensor_id)
+        self.sensor_type = str(sensor_type)
+        self.data = data or {}
+        self.timestamp = timestamp or time.time()
+        self.status = str(status)
+        self.error = error
+    
+    def to_dict(self):
+        result = {
+            'sensor_id': self.sensor_id,
+            'sensor_type': self.sensor_type,
+            'data': self.data,
+            'timestamp': self.timestamp,
+            'status': self.status
+        }
+        if self.error:
+            result['error'] = self.error
+        return result
+
 class SensorManager:
-    """Central manager for all sensor operations."""
+    """Manages sensor instances."""
     
     def __init__(self):
-        self.sensors = {}  # sensor_id -> sensor_instance
-        self.sensor_configs = {}  # sensor_id -> SensorConfig
-        self._config_file = "sensor_configs.json"
-        self._load_configs()
+        self.sensors = {}
+        self.sensor_configs = {}
+        self._config_save_hook = None
+    
+    def set_config_save_hook(self, callback):
+        """Register a callback to persist sensor configurations."""
+        self._config_save_hook = callback
     
     def _persist_configs(self):
-        """Save sensor configurations to file."""
-        try:
-            configs_data = {sid: cfg.to_dict() for sid, cfg in self.sensor_configs.items()}
-            with open(self._config_file, 'w') as f:
-                json.dump(configs_data, f)
-        except Exception as e:
-            print(f"Failed to save sensor configs: {e}")
+        """Save configuration to persistent storage if callback is set."""
+        if self._config_save_hook:
+            try:
+                configs_data = {
+                    sensor_id: config.to_dict() 
+                    for sensor_id, config in self.sensor_configs.items()
+                }
+                self._config_save_hook(configs_data)
+            except Exception as e:
+                print(f"Error persisting configs: {e}")
     
-    def _load_configs(self):
-        """Load sensor configurations from file."""
-        try:
-            with open(self._config_file, 'r') as f:
-                configs_data = json.load(f)
-            self.load_sensor_configs(configs_data)
-        except:
-            # No existing config file
-            pass
-    
-    def add_sensor(self, sensor_id, sensor_type, inputs=None, enabled=True, alias=None):
-        """Add a new sensor to the system."""
-        sensor_id = str(sensor_id)
-        
-        # Create sensor instance
-        sensor_instance = _create_sensor(sensor_type, inputs or {})
-        if sensor_instance is None:
+    def add_sensor(self, sensor_config):
+        """Add a new sensor configuration."""
+        if hasattr(sensor_config, 'sensor_id'):
+            # New style: SensorConfig object
+            sensor_id = str(sensor_config.sensor_id)
+            sensor_type = sensor_config.sensor_type
+            inputs = sensor_config.inputs or {}
+            enabled = sensor_config.enabled
+            alias = sensor_config.alias
+            config = sensor_config
+        else:
+            # Legacy style: direct parameters
+            sensor_id = str(sensor_config)
+            sensor_type = inputs = enabled = alias = None
             return False
         
-        # Create configuration
-        config = SensorConfig(sensor_id, sensor_type, inputs, enabled, alias)
+        # Create sensor instance
+        sensor_instance = _create_sensor(sensor_type, inputs)
+        if sensor_instance is None:
+            raise ValueError(f"Unknown sensor type: {sensor_type}")
         
-        # Store sensor and config
-        self.sensors[sensor_id] = sensor_instance
         self.sensor_configs[sensor_id] = config
-        
-        # Persist to storage
+        self.sensors[sensor_id] = sensor_instance
         self._persist_configs()
+        
         return True
     
     def remove_sensor(self, sensor_id):
-        """Remove a sensor from the system."""
+        """Remove a sensor configuration."""
         sensor_id = str(sensor_id)
-        if sensor_id in self.sensors:
-            del self.sensors[sensor_id]
         if sensor_id in self.sensor_configs:
             del self.sensor_configs[sensor_id]
-        self._persist_configs()
-        return True
+            if sensor_id in self.sensors:
+                del self.sensors[sensor_id]
+            self._persist_configs()
+            return True
+        return False
     
     def read_sensor(self, sensor_id):
-        """Read a single sensor."""
+        """Read data from a specific sensor."""
+        from .base_sensors import SensorReading
+        
         sensor_id = str(sensor_id)
         if sensor_id not in self.sensors:
-            return SensorReading(sensor_id, "unknown", error="Sensor not found", status="error")
+            return SensorReading(sensor_id, "unknown", status="error", error=f"Sensor '{sensor_id}' not found")
         
-        config = self.sensor_configs.get(sensor_id)
-        if config and not config.enabled:
-            return SensorReading(sensor_id, config.sensor_type, error="Sensor disabled", status="disabled")
+        config = self.sensor_configs[sensor_id]
+        if not config.enabled:
+            return SensorReading(sensor_id, config.sensor_type, status="disabled")
         
         try:
             sensor = self.sensors[sensor_id]
             data = sensor.read()
-            return SensorReading(
-                sensor_id=sensor_id,
-                sensor_type=config.sensor_type if config else "unknown",
-                data=data,
-                status="success"
-            )
+            return SensorReading(sensor_id, config.sensor_type, data=data, status="success")
         except Exception as e:
-            return SensorReading(
-                sensor_id=sensor_id,
-                sensor_type=config.sensor_type if config else "unknown",
-                error=str(e),
-                status="error"
-            )
+            return SensorReading(sensor_id, config.sensor_type, status="error", error=str(e))
     
     def read_all_sensors(self):
-        """Read all enabled sensors."""
+        """Read data from all enabled sensors."""
         readings = []
-        for sensor_id in self.sensors:
-            config = self.sensor_configs.get(sensor_id)
-            if config and config.enabled:
+        for sensor_id, config in self.sensor_configs.items():
+            if config.enabled and sensor_id in self.sensors:
                 reading = self.read_sensor(sensor_id)
                 readings.append(reading)
         return readings
@@ -275,38 +261,11 @@ class SensorManager:
 
 def _create_sensor(sensor_type, inputs):
     """Factory function to create sensor instances."""
+    from .base_sensors import AnalogSensor, DigitalSensor
     
-    # Sensor type mapping to classes
     sensor_map = {
-        # Basic sensors
-        'internal_temp': InternalTempSensor,
-        'digital_input': DigitalInputSensor,
-        'analog_input': AnalogInputSensor,
-        'system_info': SystemInfoSensor,
-        
-        # Environmental sensors
-        'dht22': DHT22Sensor,
-        'dht11': DHT11Sensor,
-        'bmp280': BMP280Sensor,
-        'bme280': BME280Sensor,
-        'bme680': BME680Sensor,
-        'ccs811': CCS811Sensor,
-        
-        # Light sensors
-        'bh1750': BH1750Sensor,
-        'tsl2561': TSL2561Sensor,
-        'apds9960': APDS9960Sensor,
-        
-        # Motion sensors
-        'pir': PIRSensor,
-        'ultrasonic': UltrasonicSensor,
-        'mpu6050': MPU6050Sensor,
-        'hall_effect': HallEffectSensor,
-        'ds18b20': DS18B20Sensor,
-        
-        # Legacy compatibility
-        'analog': AnalogInputSensor,
-        'digital': DigitalInputSensor,
+        'analog': AnalogSensor,
+        'digital': DigitalSensor,
     }
     
     sensor_class = sensor_map.get(sensor_type.lower())
@@ -316,22 +275,7 @@ def _create_sensor(sensor_type, inputs):
         except Exception as e:
             print(f"Error creating sensor {sensor_type}: {e}")
             return None
-    else:
-        print(f"Unknown sensor type: {sensor_type}")
-        return None
+    return None
 
 # Export the main interface
-__all__ = [
-    'SensorManager', 'SensorConfig', 'SensorReading', 
-    'STATUS_SUCCESS', 'STATUS_ERROR', 'STATUS_DISABLED',
-    # Base classes
-    'BaseSensor', 'I2CBaseSensor',
-    # Basic sensors
-    'InternalTempSensor', 'DigitalInputSensor', 'AnalogInputSensor', 'SystemInfoSensor',
-    # Environmental sensors
-    'DHT22Sensor', 'DHT11Sensor', 'BMP280Sensor', 'BME280Sensor', 'BME680Sensor', 'CCS811Sensor',
-    # Light sensors
-    'BH1750Sensor', 'TSL2561Sensor', 'APDS9960Sensor',
-    # Motion sensors
-    'PIRSensor', 'UltrasonicSensor', 'MPU6050Sensor', 'HallEffectSensor', 'DS18B20Sensor'
-]
+__all__ = ['SensorManager', 'SensorConfig', 'SensorReading', 'STATUS_SUCCESS', 'STATUS_ERROR', 'STATUS_DISABLED']

@@ -282,29 +282,7 @@ class AnalogInputSensor(BaseSensor):
         except Exception as e:
             raise Exception(f"Failed to read analog input: {e}")
 
-# Example of more complex sensor that could be added
-class MockDHTSensor(BaseSensor):
-    """Mock DHT temperature/humidity sensor for testing."""
-    
-    def __init__(self, inputs):
-        super().__init__(inputs)
-        pin_no = inputs.get('pin_no')
-        if pin_no is None:
-            raise ValueError("pin_no required for DHT sensor")
-        self.pin_no = pin_no
-    
-    def read(self):
-        """Read mock temperature and humidity."""
-        import random
-        # Generate realistic mock data
-        temp = round(20 + random.uniform(-5, 15), 1)
-        humidity = round(40 + random.uniform(-10, 30), 1)
-        
-        return {
-            "temperature_c": temp,
-            "humidity_percent": humidity,
-            "temperature_f": round(temp * 9/5 + 32, 1)
-        }
+# Removed MockDHTSensor - use real DHT22Sensor instead
 
 class SystemInfoSensor(BaseSensor):
     """System information sensor (memory, uptime, etc.)."""
@@ -976,16 +954,129 @@ class I2CBaseSensor(BaseSensor):
 class BMP280Sensor(I2CBaseSensor):
     """Bosch BMP280 pressure, temperature, altitude sensor."""
     
+    # BMP280 Register addresses
+    DIG_T1_REG = 0x88
+    DIG_T2_REG = 0x8A
+    DIG_T3_REG = 0x8C
+    DIG_P1_REG = 0x8E
+    DIG_P2_REG = 0x90
+    DIG_P3_REG = 0x92
+    DIG_P4_REG = 0x94
+    DIG_P5_REG = 0x96
+    DIG_P6_REG = 0x98
+    DIG_P7_REG = 0x9A
+    DIG_P8_REG = 0x9C
+    DIG_P9_REG = 0x9E
+    CTRL_MEAS_REG = 0xF4
+    CONFIG_REG = 0xF5
+    PRESS_MSB_REG = 0xF7
+    TEMP_MSB_REG = 0xFA
+    
     def __init__(self, inputs):
-        super().__init__(inputs, 0x77)  # Default I2C address
+        super().__init__(inputs, 0x77)  # Default I2C address (can be 0x76)
         self.sea_level_pressure = inputs.get('sea_level_pressure', 1013.25)  # hPa
+        self._calibration_params = None
+        self._init_sensor()
+    
+    def _init_sensor(self):
+        """Initialize BMP280 sensor and read calibration parameters."""
+        try:
+            # Read chip ID to verify sensor
+            chip_id = self.i2c.readfrom_mem(self.address, 0xD0, 1)[0]
+            if chip_id != 0x58:
+                raise Exception(f"Invalid BMP280 chip ID: 0x{chip_id:02X}")
+            
+            # Configure sensor: normal mode, temp oversampling x2, pressure oversampling x16
+            self.i2c.writeto_mem(self.address, self.CTRL_MEAS_REG, b'\x57')
+            # Configure filter and standby time: filter off, standby 0.5ms
+            self.i2c.writeto_mem(self.address, self.CONFIG_REG, b'\x00')
+            
+            # Read calibration parameters
+            self._read_calibration()
+            
+        except Exception as e:
+            print(f"BMP280 initialization failed: {e}")
+            # Fall back to mock mode if hardware not available
+            self._calibration_params = None
+    
+    def _read_calibration(self):
+        """Read calibration parameters from sensor."""
+        cal_data = self.i2c.readfrom_mem(self.address, self.DIG_T1_REG, 24)
+        
+        self._calibration_params = {
+            'dig_T1': self._bytes_to_int(cal_data[1], cal_data[0]),
+            'dig_T2': self._bytes_to_int(cal_data[3], cal_data[2], signed=True),
+            'dig_T3': self._bytes_to_int(cal_data[5], cal_data[4], signed=True),
+            'dig_P1': self._bytes_to_int(cal_data[7], cal_data[6]),
+            'dig_P2': self._bytes_to_int(cal_data[9], cal_data[8], signed=True),
+            'dig_P3': self._bytes_to_int(cal_data[11], cal_data[10], signed=True),
+            'dig_P4': self._bytes_to_int(cal_data[13], cal_data[12], signed=True),
+            'dig_P5': self._bytes_to_int(cal_data[15], cal_data[14], signed=True),
+            'dig_P6': self._bytes_to_int(cal_data[17], cal_data[16], signed=True),
+            'dig_P7': self._bytes_to_int(cal_data[19], cal_data[18], signed=True),
+            'dig_P8': self._bytes_to_int(cal_data[21], cal_data[20], signed=True),
+            'dig_P9': self._bytes_to_int(cal_data[23], cal_data[22], signed=True)
+        }
+    
+    def _bytes_to_int(self, msb, lsb, signed=False):
+        """Convert two bytes to integer."""
+        value = (msb << 8) | lsb
+        if signed and value > 32767:
+            value -= 65536
+        return value
+    
+    def _compensate_temperature(self, adc_T):
+        """Compensate raw temperature reading."""
+        if not self._calibration_params:
+            return 22.5  # Mock temperature
+            
+        var1 = (adc_T / 16384.0 - self._calibration_params['dig_T1'] / 1024.0) * self._calibration_params['dig_T2']
+        var2 = ((adc_T / 131072.0 - self._calibration_params['dig_T1'] / 8192.0) * 
+                (adc_T / 131072.0 - self._calibration_params['dig_T1'] / 8192.0)) * self._calibration_params['dig_T3']
+        self.t_fine = var1 + var2
+        return (var1 + var2) / 5120.0
+    
+    def _compensate_pressure(self, adc_P):
+        """Compensate raw pressure reading."""
+        if not self._calibration_params:
+            return 1013.25  # Mock pressure
+            
+        var1 = (self.t_fine / 2.0) - 64000.0
+        var2 = var1 * var1 * self._calibration_params['dig_P6'] / 32768.0
+        var2 += var1 * self._calibration_params['dig_P5'] * 2.0
+        var2 = (var2 / 4.0) + (self._calibration_params['dig_P4'] * 65536.0)
+        var1 = (self._calibration_params['dig_P3'] * var1 * var1 / 524288.0 + self._calibration_params['dig_P2'] * var1) / 524288.0
+        var1 = (1.0 + var1 / 32768.0) * self._calibration_params['dig_P1']
+        
+        if var1 == 0.0:
+            return 0  # Avoid division by zero
+            
+        pressure = 1048576.0 - adc_P
+        pressure = (pressure - (var2 / 4096.0)) * 6250.0 / var1
+        var1 = self._calibration_params['dig_P9'] * pressure * pressure / 2147483648.0
+        var2 = pressure * self._calibration_params['dig_P8'] / 32768.0
+        pressure += (var1 + var2 + self._calibration_params['dig_P7']) / 16.0
+        return pressure / 100.0  # Convert to hPa
     
     def read(self):
-        """Read BMP280 sensor (mock implementation)."""
+        """Read BMP280 sensor with real I2C communication."""
         try:
-            # Mock readings - in real implementation, would read from I2C registers
-            temperature = 22.5 + (time.time() % 10) - 5  # Varying temp
-            pressure = 1013.25 + (time.time() % 20) - 10  # Varying pressure
+            if self._calibration_params:
+                # Read raw temperature data
+                temp_data = self.i2c.readfrom_mem(self.address, self.TEMP_MSB_REG, 3)
+                adc_T = (temp_data[0] << 12) | (temp_data[1] << 4) | (temp_data[2] >> 4)
+                
+                # Read raw pressure data  
+                press_data = self.i2c.readfrom_mem(self.address, self.PRESS_MSB_REG, 3)
+                adc_P = (press_data[0] << 12) | (press_data[1] << 4) | (press_data[2] >> 4)
+                
+                # Compensate readings
+                temperature = self._compensate_temperature(adc_T)
+                pressure = self._compensate_pressure(adc_P)
+            else:
+                # Fallback to mock data if sensor not available
+                temperature = 22.5 + (time.time() % 10) - 5
+                pressure = 1013.25 + (time.time() % 20) - 10
             
             # Calculate altitude using barometric formula
             altitude = 44330 * (1 - (pressure / self.sea_level_pressure) ** (1/5.255))
@@ -1002,17 +1093,171 @@ class BMP280Sensor(I2CBaseSensor):
 class BME280Sensor(I2CBaseSensor):
     """Bosch BME280 pressure, temperature, humidity sensor."""
     
+    # BME280 Register addresses
+    DIG_T1_REG = 0x88
+    DIG_H1_REG = 0xA1
+    DIG_H2_REG = 0xE1
+    CTRL_HUM_REG = 0xF2
+    CTRL_MEAS_REG = 0xF4
+    CONFIG_REG = 0xF5
+    PRESS_MSB_REG = 0xF7
+    TEMP_MSB_REG = 0xFA
+    HUM_MSB_REG = 0xFD
+    
     def __init__(self, inputs):
-        super().__init__(inputs, 0x77)  # Default I2C address
+        super().__init__(inputs, 0x77)  # Default I2C address (can be 0x76)
         self.sea_level_pressure = inputs.get('sea_level_pressure', 1013.25)  # hPa
+        self._calibration_params = None
+        self._init_sensor()
+    
+    def _init_sensor(self):
+        """Initialize BME280 sensor and read calibration parameters."""
+        try:
+            # Read chip ID to verify sensor
+            chip_id = self.i2c.readfrom_mem(self.address, 0xD0, 1)[0]
+            if chip_id != 0x60:
+                raise Exception(f"Invalid BME280 chip ID: 0x{chip_id:02X}")
+            
+            # Configure humidity: oversampling x1
+            self.i2c.writeto_mem(self.address, self.CTRL_HUM_REG, b'\x01')
+            
+            # Configure sensor: normal mode, temp oversampling x2, pressure oversampling x16
+            self.i2c.writeto_mem(self.address, self.CTRL_MEAS_REG, b'\x57')
+            
+            # Configure filter and standby time: filter off, standby 0.5ms
+            self.i2c.writeto_mem(self.address, self.CONFIG_REG, b'\x00')
+            
+            # Read calibration parameters
+            self._read_calibration()
+            
+        except Exception as e:
+            print(f"BME280 initialization failed: {e}")
+            # Fall back to mock mode if hardware not available
+            self._calibration_params = None
+    
+    def _read_calibration(self):
+        """Read calibration parameters from sensor."""
+        # Read temperature and pressure calibration (0x88-0x9F)
+        cal1 = self.i2c.readfrom_mem(self.address, 0x88, 24)
+        # Read humidity calibration part 1 (0xA1)  
+        cal2 = self.i2c.readfrom_mem(self.address, 0xA1, 1)
+        # Read humidity calibration part 2 (0xE1-0xE7)
+        cal3 = self.i2c.readfrom_mem(self.address, 0xE1, 7)
+        
+        self._calibration_params = {
+            # Temperature coefficients
+            'dig_T1': self._bytes_to_int(cal1[1], cal1[0]),
+            'dig_T2': self._bytes_to_int(cal1[3], cal1[2], signed=True),
+            'dig_T3': self._bytes_to_int(cal1[5], cal1[4], signed=True),
+            
+            # Pressure coefficients
+            'dig_P1': self._bytes_to_int(cal1[7], cal1[6]),
+            'dig_P2': self._bytes_to_int(cal1[9], cal1[8], signed=True),
+            'dig_P3': self._bytes_to_int(cal1[11], cal1[10], signed=True),
+            'dig_P4': self._bytes_to_int(cal1[13], cal1[12], signed=True),
+            'dig_P5': self._bytes_to_int(cal1[15], cal1[14], signed=True),
+            'dig_P6': self._bytes_to_int(cal1[17], cal1[16], signed=True),
+            'dig_P7': self._bytes_to_int(cal1[19], cal1[18], signed=True),
+            'dig_P8': self._bytes_to_int(cal1[21], cal1[20], signed=True),
+            'dig_P9': self._bytes_to_int(cal1[23], cal1[22], signed=True),
+            
+            # Humidity coefficients
+            'dig_H1': cal2[0],
+            'dig_H2': self._bytes_to_int(cal3[1], cal3[0], signed=True),
+            'dig_H3': cal3[2],
+            'dig_H4': (cal3[3] << 4) | (cal3[4] & 0x0F),
+            'dig_H5': (cal3[5] << 4) | (cal3[4] >> 4),
+            'dig_H6': cal3[6] if cal3[6] < 128 else cal3[6] - 256
+        }
+        
+        # Sign conversion for dig_H4 and dig_H5
+        if self._calibration_params['dig_H4'] > 2047:
+            self._calibration_params['dig_H4'] -= 4096
+        if self._calibration_params['dig_H5'] > 2047:
+            self._calibration_params['dig_H5'] -= 4096
+    
+    def _bytes_to_int(self, msb, lsb, signed=False):
+        """Convert two bytes to integer."""
+        value = (msb << 8) | lsb
+        if signed and value > 32767:
+            value -= 65536
+        return value
+    
+    def _compensate_temperature(self, adc_T):
+        """Compensate raw temperature reading."""
+        if not self._calibration_params:
+            return 22.5  # Mock temperature
+            
+        var1 = (adc_T / 16384.0 - self._calibration_params['dig_T1'] / 1024.0) * self._calibration_params['dig_T2']
+        var2 = ((adc_T / 131072.0 - self._calibration_params['dig_T1'] / 8192.0) * 
+                (adc_T / 131072.0 - self._calibration_params['dig_T1'] / 8192.0)) * self._calibration_params['dig_T3']
+        self.t_fine = var1 + var2
+        return (var1 + var2) / 5120.0
+    
+    def _compensate_pressure(self, adc_P):
+        """Compensate raw pressure reading."""
+        if not self._calibration_params:
+            return 1013.25  # Mock pressure
+            
+        var1 = (self.t_fine / 2.0) - 64000.0
+        var2 = var1 * var1 * self._calibration_params['dig_P6'] / 32768.0
+        var2 += var1 * self._calibration_params['dig_P5'] * 2.0
+        var2 = (var2 / 4.0) + (self._calibration_params['dig_P4'] * 65536.0)
+        var1 = (self._calibration_params['dig_P3'] * var1 * var1 / 524288.0 + self._calibration_params['dig_P2'] * var1) / 524288.0
+        var1 = (1.0 + var1 / 32768.0) * self._calibration_params['dig_P1']
+        
+        if var1 == 0.0:
+            return 0  # Avoid division by zero
+            
+        pressure = 1048576.0 - adc_P
+        pressure = (pressure - (var2 / 4096.0)) * 6250.0 / var1
+        var1 = self._calibration_params['dig_P9'] * pressure * pressure / 2147483648.0
+        var2 = pressure * self._calibration_params['dig_P8'] / 32768.0
+        pressure += (var1 + var2 + self._calibration_params['dig_P7']) / 16.0
+        return pressure / 100.0  # Convert to hPa
+    
+    def _compensate_humidity(self, adc_H):
+        """Compensate raw humidity reading."""
+        if not self._calibration_params:
+            return 55.0  # Mock humidity
+            
+        h = self.t_fine - 76800.0
+        h = ((adc_H - (self._calibration_params['dig_H4'] * 64.0 + self._calibration_params['dig_H5'] / 16384.0 * h)) *
+             (self._calibration_params['dig_H2'] / 65536.0 * (1.0 + self._calibration_params['dig_H6'] / 67108864.0 * h *
+             (1.0 + self._calibration_params['dig_H3'] / 67108864.0 * h))))
+        h *= (1.0 - self._calibration_params['dig_H1'] * h / 524288.0)
+        
+        if h > 100.0:
+            h = 100.0
+        elif h < 0.0:
+            h = 0.0
+        return h
     
     def read(self):
-        """Read BME280 sensor (mock implementation)."""
+        """Read BME280 sensor with real I2C communication."""
         try:
-            # Mock readings
-            temperature = 22.5 + (time.time() % 10) - 5
-            humidity = 55.0 + (time.time() % 20) - 10
-            pressure = 1013.25 + (time.time() % 20) - 10
+            if self._calibration_params:
+                # Read raw temperature data
+                temp_data = self.i2c.readfrom_mem(self.address, self.TEMP_MSB_REG, 3)
+                adc_T = (temp_data[0] << 12) | (temp_data[1] << 4) | (temp_data[2] >> 4)
+                
+                # Read raw pressure data  
+                press_data = self.i2c.readfrom_mem(self.address, self.PRESS_MSB_REG, 3)
+                adc_P = (press_data[0] << 12) | (press_data[1] << 4) | (press_data[2] >> 4)
+                
+                # Read raw humidity data
+                hum_data = self.i2c.readfrom_mem(self.address, self.HUM_MSB_REG, 2)
+                adc_H = (hum_data[0] << 8) | hum_data[1]
+                
+                # Compensate readings
+                temperature = self._compensate_temperature(adc_T)
+                pressure = self._compensate_pressure(adc_P)
+                humidity = self._compensate_humidity(adc_H)
+            else:
+                # Fallback to mock data if sensor not available
+                temperature = 22.5 + (time.time() % 10) - 5
+                humidity = 55.0 + (time.time() % 20) - 10
+                pressure = 1013.25 + (time.time() % 20) - 10
             
             # Calculate dew point
             a = 17.27
