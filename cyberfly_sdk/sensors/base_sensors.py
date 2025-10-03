@@ -29,35 +29,61 @@ class SensorReading:
         return result
 
 try:
-    from machine import Pin, ADC, time_pulse_us, I2C, SoftI2C
+    from .platform_compat import Pin, ADC, I2C, time_pulse_us
+    try:
+        from .platform_compat import SoftI2C
+    except (ImportError, AttributeError):
+        SoftI2C = I2C
 except ImportError:
-    # Fallback for testing
-    class Pin:
-        IN = 0
-        OUT = 1
-        PULL_UP = 2
-        def __init__(self, pin, mode=None, pull=None):
-            self.pin = pin
-            self.mode = mode
-            self.pull = pull
-            self._value = 0
-        def value(self, val=None):
-            if val is None:
-                return self._value
-            self._value = val
-        def on(self):
-            self._value = 1
-        def off(self):
-            self._value = 0
-    
-    class ADC:
-        def __init__(self, pin):
-            self.pin = pin
-        def read_u16(self):
-            return 32768  # Mock reading
-    
-    def time_pulse_us(pin, pulse_level, timeout_us=1000000):
-        return 1000  # Mock pulse time
+    try:
+        from platform_compat import Pin, ADC, I2C, time_pulse_us
+        try:
+            from platform_compat import SoftI2C
+        except (ImportError, AttributeError):
+            SoftI2C = I2C
+    except ImportError:
+        try:
+            from machine import Pin, ADC, time_pulse_us, I2C, SoftI2C
+        except ImportError:
+            # Fallback for testing
+            class Pin:
+                IN = 0
+                OUT = 1
+                PULL_UP = 2
+                def __init__(self, pin, mode=None, pull=None):
+                    self.pin = pin
+                    self.mode = mode
+                    self.pull = pull
+                    self._value = 0
+                def value(self, val=None):
+                    if val is None:
+                        return self._value
+                    self._value = val
+                def on(self):
+                    self._value = 1
+                def off(self):
+                    self._value = 0
+            
+            class ADC:
+                def __init__(self, pin):
+                    self.pin = pin
+                def read_u16(self):
+                    return 32768  # Mock reading
+            
+            def time_pulse_us(pin, pulse_level, timeout_us=1000000):
+                return 1000  # Mock pulse time
+            
+            class I2C:
+                def __init__(self, *args, **kwargs):
+                    pass
+                def scan(self):
+                    return []
+                def readfrom_mem(self, addr, reg, nbytes):
+                    return b'\x00' * nbytes
+                def writeto_mem(self, addr, reg, data):
+                    pass
+            
+            SoftI2C = I2C
     
     class I2C:
         def __init__(self, *args, **kwargs):

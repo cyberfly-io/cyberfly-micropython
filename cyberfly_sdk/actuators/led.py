@@ -1,7 +1,14 @@
 try:
-    import machine
-except Exception:
-    machine = None
+    from ..platform_compat import Pin
+except ImportError:
+    try:
+        from platform_compat import Pin
+    except ImportError:
+        try:
+            import machine
+            Pin = machine.Pin
+        except ImportError:
+            Pin = None
 
 try:
     from ..module_base import DeviceModule
@@ -14,7 +21,7 @@ class LedModule(DeviceModule):
         super().__init__(module_id)
         self.pin_no = pin
         self.active_high = active_high
-        self._pin = machine.Pin(pin, machine.Pin.OUT) if machine else None
+        self._pin = Pin(pin, Pin.OUT) if Pin else None
 
     def _set_state(self, on: bool):
         if not self._pin:

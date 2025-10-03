@@ -1,18 +1,76 @@
+"""
+MicroPython-compatible job scheduling library.
+
+This module provides a simple way to schedule periodic jobs with various intervals
+(seconds, minutes, hours, days, weeks) and specific times of day.
+
+Example:
+    import schedule
+    
+    def my_job():
+        print("Job executed!")
+    
+    # Schedule job every 10 seconds
+    schedule.every(10).seconds.do(my_job)
+    
+    # Schedule job every day at 10:30
+    schedule.every().day.at("10:30").do(my_job)
+    
+    # Run pending jobs in main loop
+    while True:
+        schedule.run_pending()
+        time.sleep(1)
+"""
+
 import functools
-import logging
 import time
 
-logger = logging.getLogger('schedule')
+# Try to import logging, fall back to simple print-based logging
+try:
+    import logging
+    logger = logging.getLogger('schedule')
+except ImportError:
+    # Simple logger fallback for MicroPython
+    class SimpleLogger:
+        def info(self, msg, *args):
+            try:
+                print("[INFO]", msg % args if args else msg)
+            except:
+                print("[INFO]", msg)
+        
+        def exception(self, msg, *args):
+            try:
+                print("[ERROR]", msg % args if args else msg)
+            except:
+                print("[ERROR]", msg)
+    
+    logger = SimpleLogger()
 
 def now():
+    """Return current Unix timestamp as integer."""
     return int(time.time())
 
 class CancelJob(object):
+    """Sentinel class to signal that a job should be canceled.
+    
+    Return this from a job function to automatically remove it from the scheduler.
+    
+    Example:
+        def my_job():
+            if condition:
+                return schedule.CancelJob
+    """
     pass
 
 class Scheduler(object):
+    """Job scheduler managing multiple periodic jobs.
+    
+    Attributes:
+        jobs: List of scheduled Job instances
+    """
 
     def __init__(self):
+        """Initialize a new Scheduler with an empty job list."""
         self.jobs = []
 
     def run_pending(self):
@@ -42,55 +100,108 @@ class Scheduler(object):
         del self.jobs[:]
 
     def cancel_job(self, job):
-        """Delete a scheduled job."""
+        """Delete a scheduled job.
+        
+        Args:
+            job: The Job instance to remove
+            
+        Returns:
+            bool: True if job was found and removed, False otherwise
+        """
         try:
             self.jobs.remove(job)
+            return True
         except ValueError:
-            pass
+            return False
 
     def every(self, interval=1):
-        """Schedule a new periodic job."""
-        job = Job(interval)
+        """Schedule a new periodic job.
+        
+        Args:
+            interval: Number of time units between job executions (default: 1)
+            
+        Returns:
+            Job: A new Job instance for method chaining
+            
+        Example:
+            schedule.every(5).minutes.do(my_job)
+        """
+        job = Job(interval, self)
         self.jobs.append(job)
         return job
 
     def _run_job(self, job):
-        # Ensure a failing job doesn't break the scheduler loop
+        """Execute a job and handle cancellation.
+        
+        Args:
+            job: The Job instance to run
+            
+        Note:
+            Failing jobs don't break the scheduler loop. Exceptions are caught and logged.
+        """
         ret = job.run()
         if isinstance(ret, CancelJob) or ret is CancelJob:
             self.cancel_job(job)
 
     @property
     def next_run(self):
-        """Datetime when the next job should run."""
+        """Get the timestamp when the next job should run.
+        
+        Returns:
+            int or None: Unix timestamp of next scheduled job, or None if no jobs
+        """
         if not self.jobs:
             return None
         return min(self.jobs).next_run
 
     @property
     def idle_seconds(self):
-        """Number of seconds until `next_run`."""
+        """Get the number of seconds until the next job should run.
+        
+        Returns:
+            int or None: Seconds until next job, 0 if overdue, or None if no jobs
+        """
         nr = self.next_run
         if nr is None:
             return None
-        delta = nr - now()
+        delta = int(nr - now())
         return 0 if delta < 0 else delta
 
 
 class Job(object):
-    """A periodic job as used by `Scheduler`."""
+    """A periodic job as used by Scheduler.
+    
+    Attributes:
+        interval: Number of time units between executions
+        job_func: The function to execute
+        unit: Time unit ('seconds', 'minutes', 'hours', 'days', 'weeks')
+        at_time: Optional [hour, minute, second] for scheduled execution
+        last_run: Unix timestamp of last execution
+        next_run: Unix timestamp of next scheduled execution
+        period: Interval in seconds between executions
+        start_day: Specific weekday for weekly jobs
+        scheduler: Reference to parent Scheduler
+    """
 
-    def __init__(self, interval):
-        self.interval = interval  # pause interval * unit between runs
-        self.job_func = None  # the job job_func to run
-        self.unit = None  # time units, e.g. 'minutes', 'hours', ...
-        self.at_time = None  # optional time at which this job runs
-        self.last_run = None  # time of the last run
-        self.next_run = None  # time of the next run
-        self.period = None  # timedelta between runs, only valid for
-        self.start_day = None  # Specific day of the week to start on
+    def __init__(self, interval, scheduler=None):
+        """Initialize a new Job.
+        
+        Args:
+            interval: Number of time units between executions
+            scheduler: Optional reference to parent Scheduler
+        """
+        self.interval = interval
+        self.job_func = None
+        self.unit = None
+        self.at_time = None
+        self.last_run = None
+        self.next_run = None
+        self.period = None
+        self.start_day = None
+        self.scheduler = scheduler
 
     def __repr__(self):
+        """Return string representation of the job."""
         parts = ["Job("]
         if self.interval is not None and self.unit:
             parts.append("every %s %s" % (self.interval, self.unit))
@@ -103,115 +214,162 @@ class Job(object):
         if self.start_day is not None:
             parts.append(" on %s" % self.start_day)
         if self.next_run is not None:
-            parts.append(" next_run=%d" % self.next_run)
+            parts.append(" next_run=%d" % int(self.next_run))
         parts.append(")")
         return ''.join(parts)
 
     def __lt__(self, other):
-        """PeriodicJobs are sortable based on the scheduled time
-        they run next."""
+        """Compare jobs based on next_run time for sorting.
+        
+        Args:
+            other: Another Job instance
+            
+        Returns:
+            bool: True if this job runs before the other
+        """
         return self.next_run < other.next_run
 
     @property
     def second(self):
-        assert self.interval == 1
+        """Schedule job every second (interval must be 1)."""
+        if self.interval != 1:
+            raise ValueError('Use seconds (not second) for interval > 1')
         return self.seconds
 
     @property
     def seconds(self):
+        """Schedule job with second interval."""
         self.unit = 'seconds'
         return self
 
     @property
     def minute(self):
-        assert self.interval == 1
+        """Schedule job every minute (interval must be 1)."""
+        if self.interval != 1:
+            raise ValueError('Use minutes (not minute) for interval > 1')
         return self.minutes
 
     @property
     def minutes(self):
+        """Schedule job with minute interval."""
         self.unit = 'minutes'
         return self
 
     @property
     def hour(self):
-        assert self.interval == 1
+        """Schedule job every hour (interval must be 1)."""
+        if self.interval != 1:
+            raise ValueError('Use hours (not hour) for interval > 1')
         return self.hours
 
     @property
     def hours(self):
+        """Schedule job with hour interval."""
         self.unit = 'hours'
         return self
 
     @property
     def day(self):
-        assert self.interval == 1
+        """Schedule job every day (interval must be 1)."""
+        if self.interval != 1:
+            raise ValueError('Use days (not day) for interval > 1')
         return self.days
 
     @property
     def days(self):
+        """Schedule job with day interval."""
         self.unit = 'days'
         return self
 
     @property
     def week(self):
-        assert self.interval == 1
+        """Schedule job every week (interval must be 1)."""
+        if self.interval != 1:
+            raise ValueError('Use weeks (not week) for interval > 1')
         return self.weeks
 
     @property
     def monday(self):
-        assert self.interval == 1
+        """Schedule job every Monday (interval must be 1)."""
+        if self.interval != 1:
+            raise ValueError('Weekday scheduling requires interval of 1')
         self.start_day = 'monday'
         return self.weeks
 
     @property
     def tuesday(self):
-        assert self.interval == 1
+        """Schedule job every Tuesday (interval must be 1)."""
+        if self.interval != 1:
+            raise ValueError('Weekday scheduling requires interval of 1')
         self.start_day = 'tuesday'
         return self.weeks
 
     @property
     def wednesday(self):
-        assert self.interval == 1
+        """Schedule job every Wednesday (interval must be 1)."""
+        if self.interval != 1:
+            raise ValueError('Weekday scheduling requires interval of 1')
         self.start_day = 'wednesday'
         return self.weeks
 
     @property
     def thursday(self):
-        assert self.interval == 1
+        """Schedule job every Thursday (interval must be 1)."""
+        if self.interval != 1:
+            raise ValueError('Weekday scheduling requires interval of 1')
         self.start_day = 'thursday'
         return self.weeks
 
     @property
     def friday(self):
-        assert self.interval == 1
+        """Schedule job every Friday (interval must be 1)."""
+        if self.interval != 1:
+            raise ValueError('Weekday scheduling requires interval of 1')
         self.start_day = 'friday'
         return self.weeks
 
     @property
     def saturday(self):
-        assert self.interval == 1
+        """Schedule job every Saturday (interval must be 1)."""
+        if self.interval != 1:
+            raise ValueError('Weekday scheduling requires interval of 1')
         self.start_day = 'saturday'
         return self.weeks
 
     @property
     def sunday(self):
-        assert self.interval == 1
+        """Schedule job every Sunday (interval must be 1)."""
+        if self.interval != 1:
+            raise ValueError('Weekday scheduling requires interval of 1')
         self.start_day = 'sunday'
         return self.weeks
 
     @property
     def weeks(self):
+        """Schedule job with week interval."""
         self.unit = 'weeks'
         return self
 
     def at(self, time_str):
         """Schedule the job at a specific time of day/hour.
 
-        Valid formats:
-        - "HH:MM" or "HH:MM:SS" for daily/weekly jobs
-        - ":MM" or ":MM:SS" for hourly jobs (minutes/seconds past the hour)
+        Args:
+            time_str: Time string in one of these formats:
+                - "HH:MM" or "HH:MM:SS" for daily/weekly jobs
+                - ":MM" or ":MM:SS" for hourly jobs (minutes/seconds past the hour)
+                
+        Returns:
+            Job: Self for method chaining
+            
+        Raises:
+            ValueError: If time format is invalid or unit is incompatible
+            
+        Example:
+            schedule.every().day.at("10:30").do(job)
+            schedule.every().hour.at(":15").do(job)  # 15 minutes past each hour
         """
-        assert self.unit in ('days', 'hours') or self.start_day
+        if not (self.unit in ('days', 'hours') or self.start_day):
+            raise ValueError('at() can only be used with days, hours, or weekday scheduling')
         ts = time_str.strip()
         parts = ts.split(':')
         if len(parts) < 2:
@@ -226,21 +384,34 @@ class Job(object):
         minute = int(parts[1])
 
         if self.unit == 'days' or self.start_day:
-            assert 0 <= hour <= 23
+            if not (0 <= hour <= 23):
+                raise ValueError('Hour must be between 0-23')
         elif self.unit == 'hours':
             hour = 0  # force hour to the top of the hour boundary
 
-        assert 0 <= minute <= 59
-        assert 0 <= sec <= 59
+        if not (0 <= minute <= 59):
+            raise ValueError('Minute must be between 0-59')
+        if not (0 <= sec <= 59):
+            raise ValueError('Second must be between 0-59')
         self.at_time = [hour, minute, sec]
         return self
 
     def do(self, job_func, *args, **kwargs):
-        """Specifies the job_func that should be called every time the
-        job runs.
+        """Specify the function to execute when the job runs.
 
-        Any additional arguments are passed on to job_func when
-        the job runs.
+        Args:
+            job_func: Callable to execute
+            *args: Positional arguments to pass to job_func
+            **kwargs: Keyword arguments to pass to job_func
+            
+        Returns:
+            Job: Self for potential further operations
+            
+        Example:
+            def my_job(name):
+                print(f"Hello {name}")
+            
+            schedule.every(10).seconds.do(my_job, "World")
         """
         self.job_func = functools.partial(job_func, *args, **kwargs)
         try:
@@ -255,14 +426,21 @@ class Job(object):
 
     @property
     def should_run(self):
-        """True if the job should be run now."""
+        """Check if the job should run now.
+        
+        Returns:
+            bool: True if current time >= scheduled next_run time
+        """
         return now() >= self.next_run
 
     def run(self):
-        """Run the job and immediately reschedule it.
+        """Execute the job function and reschedule for next run.
 
-        Any exception raised by the job function is caught and logged; the
-        job is still rescheduled for its next occurrence.
+        The job is always rescheduled, even if an exception occurs.
+        Exceptions are caught, logged, and don't break the scheduler.
+        
+        Returns:
+            Any: The return value of the job function, or None if it raised an exception
         """
         logger.info('Running job %s', self)
         ret = None
@@ -279,8 +457,18 @@ class Job(object):
         return ret
 
     def _schedule_next_run(self):
-        """Compute the instant when this job should run next."""
-        assert self.unit in ('seconds', 'minutes', 'hours', 'days', 'weeks')
+        """Calculate and set the next_run timestamp for this job.
+        
+        Handles various scheduling modes:
+        - Simple periodic: run every N units from now
+        - Time-of-day: run at specific time each period
+        - Weekday: run on specific day of week
+        
+        Raises:
+            ValueError: If unit is not set or invalid
+        """
+        if not self.unit or self.unit not in ('seconds', 'minutes', 'hours', 'days', 'weeks'):
+            raise ValueError(f'Invalid time unit: {self.unit}')
 
         # Compute base period in seconds
         f = 1
@@ -311,7 +499,12 @@ class Job(object):
         next_run = base
 
         if self.at_time is not None:
-            tm = list(time.localtime(base))
+            try:
+                tm = list(time.localtime(base))
+            except (OSError, OverflowError):
+                # Handle potential timestamp overflow in MicroPython
+                base = now()
+                tm = list(time.localtime(base))
             h = self.at_time[0]
             m = self.at_time[1]
             s = self.at_time[2] if len(self.at_time) > 2 else 0
@@ -332,7 +525,12 @@ class Job(object):
                 tm[3] = h
             tm[4] = m
             tm[5] = s
-            next_run = time.mktime(tuple(tm))
+            try:
+                next_run = time.mktime(tuple(tm))
+            except (OSError, OverflowError):
+                # Fallback for MicroPython platforms without mktime
+                # Calculate timestamp manually
+                next_run = base + (h - tm[3]) * 3600 + (m - tm[4]) * 60 + (s - tm[5])
 
             # If not passed yet today, allow today; otherwise it rolls over below
             if not passed_today:
@@ -343,12 +541,14 @@ class Job(object):
 
         if self.start_day is not None:
             # Align to the requested weekday
-            assert self.unit == 'weeks'
+            if self.unit != 'weeks':
+                raise ValueError('start_day requires weeks unit')
             weekdays = (
                 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'
             )
-            wd = time.localtime(next_run)[6]
-            assert self.start_day in weekdays
+            wd = time.localtime(int(next_run))[6]
+            if self.start_day not in weekdays:
+                raise ValueError(f'Invalid weekday: {self.start_day}')
             weekday = weekdays.index(self.start_day)
             days_ahead = weekday - wd
             if days_ahead <= 0:
@@ -362,54 +562,111 @@ class Job(object):
 
         self.next_run = next_run
 
-# The following methods are shortcuts for not having to
-# create a Scheduler instance:
+# ============================================================================
+# Module-level convenience functions for default scheduler
+# ============================================================================
 
 default_scheduler = Scheduler()
-jobs = default_scheduler.jobs  # todo: should this be a copy, e.g. jobs()?
+
+def jobs():
+    """Get the list of scheduled jobs in the default scheduler.
+    
+    Returns:
+        list: List of Job instances
+    """
+    return default_scheduler.jobs[:]
 
 
 def every(interval=1):
-    """Schedule a new periodic job."""
+    """Schedule a new periodic job using the default scheduler.
+    
+    Args:
+        interval: Number of time units between executions (default: 1)
+        
+    Returns:
+        Job: A new Job instance for method chaining
+        
+    Example:
+        schedule.every(10).seconds.do(my_job)
+        schedule.every().day.at("10:30").do(my_job)
+    """
     return default_scheduler.every(interval)
 
 
 def run_pending():
-    """Run all jobs that are scheduled to run.
+    """Run all jobs scheduled to run now in the default scheduler.
 
-    Please note that it is *intended behavior that run_pending()
-    does not run missed jobs*. For example, if you've registered a job
-    that should run every minute and you only call run_pending()
-    in one hour increments then your job won't be run 60 times in
-    between but only once.
+    Note:
+        By design, missed intervals are not backfilled. Only the next
+        due occurrence is executed for each job. For example, if a job
+        should run every minute but run_pending() is only called hourly,
+        the job runs once (not 60 times).
+        
+    Example:
+        while True:
+            schedule.run_pending()
+            time.sleep(1)
     """
     default_scheduler.run_pending()
 
 
 def run_all(delay_seconds=0):
-    """Run all jobs regardless if they are scheduled to run or not.
+    """Run all jobs immediately, regardless of schedule.
 
-    A delay of `delay` seconds is added between each job. This can help
-    to distribute the system load generated by the jobs more evenly over
-    time."""
+    Args:
+        delay_seconds: Number of seconds to wait between each job execution
+                      to help distribute system load (default: 0)
+                      
+    Example:
+        schedule.run_all()  # Run all jobs now
+        schedule.run_all(delay_seconds=2)  # Run with 2s between each
+    """
     default_scheduler.run_all(delay_seconds=delay_seconds)
 
 
 def clear():
-    """Deletes all scheduled jobs."""
+    """Delete all scheduled jobs from the default scheduler.
+    
+    Example:
+        schedule.clear()  # Remove all jobs
+    """
     default_scheduler.clear()
 
 
 def cancel_job(job):
-    """Delete a scheduled job."""
-    default_scheduler.cancel_job(job)
+    """Remove a specific job from the default scheduler.
+    
+    Args:
+        job: The Job instance to remove
+        
+    Returns:
+        bool: True if job was found and removed, False otherwise
+        
+    Example:
+        job = schedule.every(10).seconds.do(my_function)
+        schedule.cancel_job(job)
+    """
+    return default_scheduler.cancel_job(job)
 
 
 def next_run():
-    """Datetime when the next job should run."""
+    """Get the timestamp when the next job should run.
+    
+    Returns:
+        int or None: Unix timestamp of next scheduled job, or None if no jobs
+    """
     return default_scheduler.next_run
 
 
 def idle_seconds():
-    """Number of seconds until `next_run`."""
+    """Get the number of seconds until the next job should run.
+    
+    Returns:
+        int or None: Seconds until next job, 0 if overdue, or None if no jobs
+        
+    Example:
+        sleep_time = schedule.idle_seconds()
+        if sleep_time:
+            time.sleep(min(sleep_time, 60))  # Sleep up to 60 seconds
+    """
     return default_scheduler.idle_seconds

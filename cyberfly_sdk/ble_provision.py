@@ -17,9 +17,15 @@ except Exception:
     from config import save_config
 
 try:
-    from machine import Pin
+    from .platform_compat import Pin
 except ImportError:
-    Pin = None
+    try:
+        from platform_compat import Pin
+    except ImportError:
+        try:
+            from machine import Pin
+        except ImportError:
+            Pin = None
 
 # === Frontend alignment constants ===
 # (Must match React UI: SERVICE_UUID, RX_CHAR_UUID, TX_CHAR_UUID, MAX_JSON_SIZE=384, FRAGMENT_TIMEOUT_MS=2000)
@@ -57,7 +63,8 @@ class BleProvisioner:
         "_ble","_conn","_rx_handle","_tx_handle",
         "_rx_buf","_last_frag_ms","_saved","_connected",
         "_svc_uuid","_rx_uuid","_tx_uuid","_last_ping",
-        "_led_pin","_led_state","_last_blink"
+        "_led_pin","_led_state","_last_blink",
+        "_connection_attempts","_mtu_size","_advertising"
     )
 
     def __init__(self, name="CYBERFLY-SETUP", timeout_s=180, log=False, auto_reset=True):
@@ -75,6 +82,9 @@ class BleProvisioner:
         self._saved      = False
         self._connected  = False
         self._last_ping  = 0
+        self._connection_attempts = 0
+        self._mtu_size   = 23  # Default MTU, updated after negotiation
+        self._advertising = False  # Track advertising state
 
         self._svc_uuid = None
         self._rx_uuid  = None
@@ -96,6 +106,45 @@ class BleProvisioner:
             try: print("[BLE]",*a)
             except: pass
     
+    def _cleanup_ble(self):
+        """Cleanup BLE resources and turn off LED"""
+        self._log("cleaning up BLE...")
+        
+        # Turn off LED
+        if self._led_pin:
+            try:
+                self._led_pin.off()
+                self._log("LED off")
+            except Exception as e:
+                self._log("LED off failed:", e)
+        
+        # Stop advertising
+        if self._ble:
+            try:
+                self._ble.gap_advertise(None)
+                self._advertising = False
+                self._log("advertising stopped")
+            except Exception as e:
+                self._log("stop advertising failed:", e)
+            
+            # Disconnect if connected
+            if self._conn:
+                try:
+                    # There's no explicit disconnect in MicroPython BLE
+                    # but we can clear the connection
+                    self._conn = None
+                    self._connected = False
+                    self._log("connection cleared")
+                except Exception as e:
+                    self._log("disconnect failed:", e)
+            
+            # Deactivate BLE
+            try:
+                self._ble.active(False)
+                self._log("BLE deactivated")
+            except Exception as e:
+                self._log("BLE deactivate failed:", e)
+    
     def _blink_led(self):
         """Blink LED to indicate BLE mode is active"""
         if not self._led_pin:
@@ -111,42 +160,52 @@ class BleProvisioner:
                 self._led_pin.off()
             self._last_blink = now
 
-    def _notify_json_str(self, s):
-        if not (self._ble and self._connected and self._tx_handle is not None and self._conn is not None):
-            self._log("notify failed - not connected")
-            return False
-        
-        try:
-            if isinstance(s, str):
-                payload = s.encode("utf-8")
-            else:
-                payload = bytes(s)
-            
-            self._log(f"notifying {len(payload)} bytes:", payload[:100] if len(payload) > 100 else payload)
-            
-            # For large payloads, send in chunks
-            max_chunk = 180  # MTU size
-            if len(payload) <= max_chunk:
-                # Single notification
-                self._ble.gatts_write(self._tx_handle, payload)
-                self._ble.gatts_notify(self._conn, self._tx_handle)
-                self._log("notification sent successfully")
-                return True
-            else:
-                # Chunked notifications
-                self._log(f"chunking large payload: {len(payload)} bytes")
-                for i in range(0, len(payload), max_chunk):
-                    chunk = payload[i:i+max_chunk]
-                    self._ble.gatts_write(self._tx_handle, chunk)
-                    self._ble.gatts_notify(self._conn, self._tx_handle)
-                    time.sleep_ms(50)  # Small delay between chunks
-                    self._log(f"sent chunk {i//max_chunk + 1}")
-                self._log("chunked notification complete")
-                return True
-                
-        except Exception as e:
-            self._log("notify fail", e)
-            return False
+    def _notify_bytes(self, data):
+        """Send pre-formatted bytes directly (for status messages)"""
+        if isinstance(data, str):
+            data = data.encode('utf-8')
+        size = len(data)
+        offset = 0
+        step = max(20, self._mtu_size - 3)
+        chunks_sent = 0
+        while offset < size:
+            chunk = data[offset : offset + step]
+            try:
+                self._ble.gatts_notify(self._conn, self._tx_handle, chunk)
+            except Exception as e:
+                self._log("notify failed:", e)
+                return False
+            offset += step
+            chunks_sent += 1
+            # Only delay every 3 chunks to reduce latency
+            if offset < size and chunks_sent % 3 == 0:
+                time.sleep_ms(20)
+        if self.log:
+            print(f"[BLE] Sent {chunks_sent} chunks ({size} bytes)")
+        return True
+
+    def _notify_json_str(self, obj, evt="data"):
+        s = json.dumps({"event": evt, "data": obj})
+        size = len(s)
+        offset = 0
+        # Use negotiated MTU minus ATT overhead (3 bytes)
+        step = max(20, self._mtu_size - 3)
+        chunks_sent = 0
+        while offset < size:
+            chunk = s[offset : offset + step]
+            try:
+                self._ble.gatts_notify(self._conn, self._tx_handle, chunk)
+            except Exception as e:
+                self._log("notify failed:", e)
+                return False
+            offset += step
+            chunks_sent += 1
+            # Only delay every 3 chunks to reduce latency
+            if offset < size and chunks_sent % 3 == 0:
+                time.sleep_ms(20)
+        if self.log:
+            print(f"[BLE] Sent {chunks_sent} chunks ({size} bytes)")
+        return True
 
     # ---------- Fragment Accumulation (mirrors frontend logic) ----------
     def _reset_buffer(self):
@@ -235,7 +294,7 @@ class BleProvisioner:
             self._log("parsed config:", cfg.get("config_type", "device"))
         except Exception as e:
             self._log("json parse failed:", e)
-            self._notify_json_str(_ERROR_BAD_JSON)
+            self._notify_bytes(_ERROR_BAD_JSON)
             self._reset_buffer()
             return
 
@@ -273,20 +332,34 @@ class BleProvisioner:
             self._log("device config saved")
             
             # Send saved confirmation that UI expects
-            self._notify_json_str(_STATUS_SAVED)
+            self._notify_bytes(_STATUS_SAVED)
+            
+            # Give time for the response to be sent and filesystem to flush
+            time.sleep_ms(800)  # Increased from 500ms to ensure filesystem flush
             
             # Auto reset after successful configuration
             if self.auto_reset:
-                time.sleep_ms(1200)
+                self._log("preparing to reset...")
+                time.sleep_ms(200)
                 try:
-                    import machine
-                    machine.reset()
-                except Exception:
-                    pass
+                    from .platform_compat import reset
+                    self._log("resetting via platform_compat...")
+                    reset()
+                except ImportError:
+                    try:
+                        from platform_compat import reset
+                        self._log("resetting via platform_compat (direct)...")
+                        reset()
+                    except ImportError:
+                        self._log("resetting via machine.reset()...")
+                        import machine
+                        machine.reset()
             
         except Exception as e:
             self._log("save failed", e)
-            self._notify_json_str(_ERROR_SAVE_FAIL)
+            import sys
+            sys.print_exception(e)
+            self._notify_bytes(_ERROR_SAVE_FAIL)
         finally:
             self._reset_buffer()
     
@@ -299,13 +372,22 @@ class BleProvisioner:
                 # data: (conn_handle, addr_type, addr)
                 self._conn = data[0] if isinstance(data,(tuple,list)) else data
                 self._connected = True
+                self._connection_attempts += 1
                 self._last_ping = time.ticks_ms()
                 self._reset_buffer()
-                self._log("connected conn_handle:", self._conn)
+                self._log(f"connected conn_handle: {self._conn} (attempt {self._connection_attempts})")
                 
-                # Shorter settle time and immediate response
-                time.sleep_ms(100)
-                success = self._notify_json_str(_STATUS_READY)
+                # MTU is negotiated by the central (client/UI)
+                # We already set our preferred MTU via config(mtu=512) during init
+                # The actual MTU used will be min(our_mtu, client_mtu)
+                # MicroPython doesn't provide a way to query the negotiated MTU on peripheral side
+                # So we use our configured MTU as a reasonable assumption
+                # Note: This is limited by the client's requested MTU
+                self._log(f"using MTU: {self._mtu_size} (negotiated by central)")
+                
+                # Minimal settle time for faster response
+                time.sleep_ms(30)
+                success = self._notify_bytes(_STATUS_READY)
                 self._log("ready status sent:", success)
 
             elif event == _IRQ_CENTRAL_DISCONNECT:
@@ -314,8 +396,12 @@ class BleProvisioner:
                 self._connected = False
                 self._reset_buffer()
                 if not self._saved:
-                    time.sleep_ms(150)
-                    self._start_advertising()
+                    # Quickly restart advertising for better reconnection
+                    time.sleep_ms(50)
+                    if self._start_advertising(fast=True):
+                        self._log("re-advertising after disconnect")
+                    else:
+                        self._log("failed to restart advertising")
 
             elif event == _IRQ_GATTS_WRITE and self._connected:
                 try:
@@ -349,32 +435,39 @@ class BleProvisioner:
         name_data = bytes([len(name)+1, 0x09]) + name
         # Service UUID (16-bit shortened)
         service_uuid = b"\x03\x03\x01\x18"  # Generic Access Service
-        return flags + name_data + service_uuid
+        # TX Power Level (0 dBm) for better RSSI calculation
+        tx_power = b"\x02\x0A\x00"
+        return flags + name_data + service_uuid + tx_power
 
-    def _start_advertising(self):
+    def _start_advertising(self, fast=True):
         if not self._ble:
             return False
         
-        # Stop any existing advertising
+        # Stop any existing advertising with reduced delay
         try:
             self._ble.gap_advertise(None)
-            time.sleep_ms(100)
-        except:
-            pass
+            self._advertising = False
+            time.sleep_ms(50)
+        except Exception as e:
+            self._log("stop advertising error:", e)
         
         adv = self._adv_payload()
         self._log("adv payload len:", len(adv), "data:", [hex(b) for b in adv])
         
+        # Adaptive advertising: fast discovery then power-saving
+        interval = 50000 if fast else 200000  # 50ms fast, 200ms slow
+        
         try:
-            # Try with longer interval for better discoverability
-            self._ble.gap_advertise(200000, adv_data=adv)  # 200ms interval
-            self._log("advertising", self.name, "at 200ms interval")
+            self._ble.gap_advertise(interval, adv_data=adv)
+            self._advertising = True
+            self._log("advertising", self.name, f"at {interval//1000}ms interval")
             return True
         except Exception as e:
-            self._log("adv fail 200ms", e)
+            self._log(f"adv fail {interval//1000}ms", e)
             try:
-                # Fallback to shorter interval
-                self._ble.gap_advertise(100000, adv_data=adv)  # 100ms interval
+                # Fallback to 100ms interval
+                self._ble.gap_advertise(100000, adv_data=adv)
+                self._advertising = True
                 self._log("advertising", self.name, "at 100ms interval")
                 return True
             except Exception as e2:
@@ -382,9 +475,12 @@ class BleProvisioner:
                 try:
                     # Last resort - minimal advertising
                     self._ble.gap_advertise(100)
+                    self._advertising = True
                     self._log("advertising", self.name, "minimal mode")
                     return True
-                except Exception:
+                except Exception as e3:
+                    self._log("all advertising attempts failed:", e3)
+                    self._advertising = False
                     return False
 
     # ---------- Start ----------
@@ -405,9 +501,9 @@ class BleProvisioner:
         try:
             self._ble = bluetooth.BLE()
             self._ble.active(False)  # Reset BLE first
-            time.sleep_ms(200)
+            time.sleep_ms(100)  # Faster init: 100ms instead of 200ms
             self._ble.active(True)
-            time.sleep_ms(500)  # Allow BLE to stabilize
+            time.sleep_ms(300)  # Faster stabilization: 300ms instead of 500ms
             self._log("ble activated")
         except Exception as e:
             self._log("ble init fail", e)
@@ -420,20 +516,38 @@ class BleProvisioner:
         except Exception as e: 
             self._log("gap name fail", e)
 
-        # Set connectable and discoverable
+        # Set connectable and discoverable with larger RX buffer
         try:
-            # Enable both scanning and advertising
-            self._ble.config(rxbuf=1024)  # Increase RX buffer
-            self._log("rx buffer configured")
-        except Exception as e: 
-            self._log("rxbuf config fail", e)
+            self._ble.config(rxbuf=2048)  # Increased from 1024 to 2048
+            self._log("rx buffer configured: 2048")
+        except Exception:
+            # rxbuf not supported in this build - safe to ignore
+            pass
 
-        # Request larger MTU
+        # Request larger MTU for better throughput
+        # This sets our maximum MTU that we'll accept from the central
+        # The actual MTU used will be min(our_mtu, central_mtu)
         try: 
-            self._ble.config(mtu=180)
-            self._log("mtu set to 180")
-        except Exception as e: 
-            self._log("mtu config fail", e)
+            self._ble.config(mtu=512)
+            self._mtu_size = 512  # Track our configured MTU
+            self._log("mtu configured: 512")
+        except Exception:
+            try:
+                self._ble.config(mtu=180)
+                self._mtu_size = 180  # Track our configured MTU
+                self._log("mtu configured: 180")
+            except Exception as e: 
+                self._mtu_size = 23  # Default MTU
+                self._log("mtu config fail, using default: 23", e)
+
+        # Set connection parameters for responsiveness
+        # (min_interval, max_interval, latency, timeout) in units of 1.25ms
+        # 6-12 = 7.5ms-15ms intervals, 0 latency, 200*10ms = 2s timeout
+        try:
+            self._ble.config(conn_params=(6, 12, 0, 200))
+            self._log("connection params configured")
+        except Exception:
+            pass  # Not all builds support this
 
         self._ble.irq(self._irq)
 
@@ -453,51 +567,80 @@ class BleProvisioner:
             self._log("service reg fail", e)
             return False
 
-        if not self._start_advertising():
+        if not self._start_advertising(fast=True):  # Start with fast advertising
             return False
 
         self._log("provisioner ready timeout", self.timeout_s, "s")
         start_ms = time.ticks_ms()
         last_gc = start_ms
+        last_adv_check = start_ms
+        fast_adv_until = start_ms + 60000  # Fast advertising for first 60 seconds (improved discoverability)
+        
         while not self._saved:
             now = time.ticks_ms()
             if time.ticks_diff(now, start_ms) >= self.timeout_s * 1000:
                 self._log("timeout")
                 break
-            # Connection health check every 2s
-            if self._connected and time.ticks_diff(now, self._last_ping) > 2000:
+            
+            # Ensure advertising is active if not connected (check every 10s)
+            if not self._connected and time.ticks_diff(now, last_adv_check) > 10000:
+                if not self._advertising:
+                    self._log("advertising stopped unexpectedly, restarting...")
+                    is_fast = now < fast_adv_until
+                    self._start_advertising(fast=is_fast)
+                last_adv_check = now
+            
+            # Switch to slow advertising after 60 seconds to save power
+            if not self._connected and now > fast_adv_until:
+                try:
+                    self._ble.gap_advertise(None)
+                    time.sleep_ms(50)
+                    self._start_advertising(fast=False)
+                    self._log("switched to slow advertising (power save)")
+                    fast_adv_until = now + 3600000  # Don't switch again for 1 hour
+                except Exception as e:
+                    self._log("failed to switch to slow advertising:", e)
+            
+            # Connection health check every 5s (reduced frequency to avoid interference)
+            if self._connected and time.ticks_diff(now, self._last_ping) > 5000:
                 try:
                     # Simple ping: try to read TX handle (non-blocking)
                     self._ble.gatts_read(self._tx_handle)
                     self._last_ping = now
-                except Exception:
-                    self._log("connection lost")
+                except Exception as e:
+                    self._log("connection health check failed:", e)
                     self._connected = False
                     self._conn = None
                     if not self._saved:
-                        time.sleep_ms(150)
-                        self._start_advertising()
-            if time.ticks_diff(now, last_gc) > 10000:
+                        time.sleep_ms(50)
+                        if self._start_advertising(fast=True):
+                            self._log("re-advertising after connection lost")
+                        else:
+                            self._log("failed to restart advertising after connection lost")
+            
+            # GC every 15s (was 10s) to reduce overhead
+            if time.ticks_diff(now, last_gc) > 15000:
                 gc.collect()
                 last_gc = now
             
             # Blink LED to indicate BLE mode
             self._blink_led()
             
-            time.sleep_ms(150)
+            time.sleep_ms(100)  # Faster main loop: 100ms instead of 150ms
 
-        try:
-            self._ble.gap_advertise(None)
-            self._ble.active(False)
-        except Exception:
-            pass
-        
-        # Turn off LED when exiting BLE mode
-        if self._led_pin:
+        # Only cleanup if we're not going to reset (which should have already happened)
+        # If auto_reset=True and we reach here, something went wrong with reset
+        if self._saved and self.auto_reset:
+            self._log("WARNING: Expected reset but still running! Attempting manual reset...")
             try:
-                self._led_pin.off()
-            except Exception:
-                pass
+                import machine
+                machine.reset()
+            except Exception as e:
+                self._log("Manual reset failed:", e)
+        
+        # Cleanup BLE resources (for timeout or auto_reset=False cases)
+        self._log("exiting provisioning mode...")
+        self._cleanup_ble()
         
         gc.collect()
         return self._saved

@@ -9,7 +9,22 @@ from actuators.led import LedModule
 from sensors import SensorManager, SensorConfig
 from config import load_config, save_config
 import json
-import machine
+try:
+    from platform_compat import Pin, HAS_MACHINE, PLATFORM
+except ImportError:
+    # Fallback for direct machine import
+    try:
+        from machine import Pin
+        HAS_MACHINE = True
+        PLATFORM = 'unknown'
+    except ImportError:
+        HAS_MACHINE = False
+        PLATFORM = 'unknown'
+        class Pin:
+            def __init__(self, *args, **kwargs):
+                pass
+            def value(self, *args):
+                return 0
 
 class CyberflyClient:
     def __init__(self, device_id, key_pair, ssid, wifi_password, network_id = "mainnet01", node_url="https://node.cyberfly.io"):
@@ -17,8 +32,16 @@ class CyberflyClient:
         self.wifi_password = wifi_password
         self.key_pair = key_pair
         self.network_id = network_id
-        if machine:
-            self.led = machine.Pin(2, machine.Pin.OUT)
+        if HAS_MACHINE:
+            try:
+                self.led = Pin(2, Pin.OUT)
+                print(f"[INFO] Running on platform: {PLATFORM}")
+            except Exception as e:
+                print(f"[WARN] LED init failed: {e}")
+                class _DummyLed:
+                    def value(self, *_):
+                        return 0
+                self.led = _DummyLed()
         else:
             class _DummyLed:
                 def value(self, *_):
@@ -64,22 +87,96 @@ class CyberflyClient:
     @staticmethod
     def boot(button_pin=0, long_ms=3000, ble=True, ble_timeout=300):
         import time
-        import machine
-        cfg = load_config()
-        trigger = False
-        if machine:
+        try:
+            from platform_compat import Pin, HAS_MACHINE, reset
+        except ImportError:
             try:
-                btn = machine.Pin(button_pin, machine.Pin.IN, machine.Pin.PULL_UP)
-                if btn.value() == 0:
+                from machine import Pin
+                HAS_MACHINE = True
+                def reset():
+                    import machine
+                    machine.reset()
+            except ImportError:
+                HAS_MACHINE = False
+                class Pin:
+                    IN = 0
+                    PULL_UP = 2
+                    def __init__(self, *args, **kwargs):
+                        pass
+                    def value(self):
+                        return 1
+                def reset():
+                    pass
+        
+        cfg = load_config()
+        
+        # Check if config is valid (has required fields)
+        config_valid = False
+        if cfg:
+            required_fields = ['device_id', 'ssid', 'key_pair']
+            config_valid = all(cfg.get(field) for field in required_fields)
+            if config_valid:
+                # Also check key_pair has publicKey
+                kp = cfg.get('key_pair', {})
+                if not kp.get('publicKey'):
+                    config_valid = False
+        
+        if config_valid:
+            print("[BOOT] Found valid config")
+        else:
+            print("[BOOT] No valid config found")
+        
+        trigger = False
+        # Always check button if button_pin is provided (allows reconfiguration)
+        if HAS_MACHINE and button_pin is not None:
+            try:
+                btn = Pin(button_pin, Pin.IN, Pin.PULL_UP)
+                time.sleep_ms(100)  # Let pull-up stabilize
+                
+                # Take multiple readings to verify pin state
+                readings = []
+                for _ in range(3):
+                    readings.append(btn.value())
+                    time.sleep_ms(20)
+                
+                # Check if readings are consistent
+                initial_state = readings[-1]
+                all_same = all(r == initial_state for r in readings)
+                
+                print(f"[BOOT] Button pin {button_pin} readings: {readings} -> initial_state: {initial_state}")
+                
+                # If pin is stuck LOW (all readings are 0), it's likely a hardware issue
+                # In this case, skip button check to avoid false trigger
+                if not all_same:
+                    print("[BOOT] Button pin unstable, skipping button check")
+                elif all(r == 0 for r in readings):
+                    print("[BOOT] WARNING: Button pin stuck LOW - possible hardware issue or wrong pin")
+                    print("[BOOT] Skipping button check to avoid false trigger")
+                    print("[BOOT] If you need to reconfigure, use a different GPIO pin")
+                # Only check for button hold if initial state is LOW AND readings are stable
+                elif initial_state == 0:
+                    print(f"[BOOT] Button detected pressed, checking for {long_ms}ms hold...")
                     t0 = time.ticks_ms()
-                    while btn.value() == 0:
-                        if time.ticks_diff(time.ticks_ms(), t0) > long_ms:
-                            trigger = True
+                    
+                    while time.ticks_diff(time.ticks_ms(), t0) < long_ms:
+                        if btn.value() == 0:
+                            # Button still held
+                            if time.ticks_diff(time.ticks_ms(), t0) >= long_ms:
+                                trigger = True
+                                print("[BOOT] Button held - entering BLE provisioning mode")
+                                break
+                        else:
+                            # Button released
+                            print(f"[BOOT] Button released after {time.ticks_diff(time.ticks_ms(), t0)}ms")
                             break
                         time.sleep_ms(50)
-            except Exception:
+                else:
+                    print("[BOOT] Button not pressed, continuing normal boot")
+            except Exception as e:
+                print(f"[WARN] Button check failed: {e}")
                 pass
-        if not cfg or trigger:
+        
+        if not config_valid or trigger:
             if ble:
                 try:
                     from .ble_provision import provision
@@ -92,9 +189,9 @@ class CyberflyClient:
                 else:
                     print("BLE provisioning timeout; rebooting")
                     try:
-                        import machine
-                        machine.reset()
-                    except:
+                        reset()
+                    except Exception as e:
+                        print(f"[WARN] Reset failed: {e}")
                         pass
                     return None
         kp = cfg.get('key_pair') or {"publicKey": "", "secretKey": ""}
@@ -240,7 +337,14 @@ class CyberflyClient:
         try:
             cfg = load_config()
             if cfg and 'sensors' in cfg:
-                loaded_sensors = self.sensor_manager.load_sensor_configs(cfg['sensors'])
+                sensor_cfgs = cfg['sensors']
+                if isinstance(sensor_cfgs, list):
+                    sensor_cfgs = {
+                        item['sensor_id']: item
+                        for item in sensor_cfgs
+                        if isinstance(item, dict) and item.get('sensor_id')
+                    }
+                loaded_sensors = self.sensor_manager.load_sensor_configs(sensor_cfgs)
                 print(f"Loaded {len(loaded_sensors)} sensors from config")
         except Exception as e:
             print(f"Failed to load sensor configs: {e}")
@@ -365,12 +469,19 @@ class CyberflyClient:
             out[m.id] = m.read()
         return out
 
-    def set_ntptime(self):
+    def set_ntptime(self, max_retries=3):
         print("Set NTP time")
-        try:
-            cntptime.settime()
-        except:
-            self.set_ntptime()
+        for attempt in range(max_retries):
+            try:
+                cntptime.settime()
+                print("NTP time set successfully")
+                return True
+            except Exception as e:
+                print(f"NTP attempt {attempt + 1}/{max_retries} failed: {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(2)  # Wait before retry
+        print("[WARN] Failed to set NTP time after all retries")
+        return False
 
     def update_data(self, key: str, value):
         self.device_data.update({key: value})
@@ -406,9 +517,38 @@ class CyberflyClient:
         signed = shipper_utils.make_cmd(msg, self.key_pair)
         shipper_utils.mqtt_publish(self.mqtt_client, topic, signed)
 
-    def update_device(self):
-        device = api.get_device(self.device_id, self.network_id)
-        self.device_info = device
+    def update_device(self, retry_delay=2000):
+        """
+        Update device info with infinite retry logic until success.
+        
+        Args:
+            retry_delay: Delay between retries in milliseconds (default: 2000ms)
+        
+        Returns:
+            bool: Always returns True (loops until success)
+        """
+        import time
+        
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                print(f"[update_device] Attempt {attempt}")
+                device = api.get_device(self.device_id, self.network_id)
+                
+                # Check if we got valid device info
+                if device and isinstance(device, dict) and device:
+                    self.device_info = device
+                    print(f"[update_device] Success! Device info retrieved: {list(device.keys())}")
+                    return True
+                else:
+                    print(f"[update_device] Attempt {attempt} returned empty or invalid data")
+                    
+            except Exception as e:
+                print(f"[update_device] Attempt {attempt} failed: {e}")
+            
+            print(f"[update_device] Retrying in {retry_delay}ms...")
+            time.sleep_ms(retry_delay)
 
     def on_connect(self):
         print("Connected")

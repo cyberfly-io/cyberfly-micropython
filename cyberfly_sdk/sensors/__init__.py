@@ -87,14 +87,21 @@ class SensorManager:
         self.sensors = {}  # sensor_id -> sensor_instance
         self.sensor_configs = {}  # sensor_id -> SensorConfig
         self._config_file = "sensor_configs.json"
+        self._config_save_hook = None
         self._load_configs()
     
     def _persist_configs(self):
         """Save sensor configurations to file."""
         try:
             configs_data = {sid: cfg.to_dict() for sid, cfg in self.sensor_configs.items()}
-            with open(self._config_file, 'w') as f:
-                json.dump(configs_data, f)
+            if self._config_save_hook:
+                try:
+                    self._config_save_hook(configs_data)
+                except Exception as hook_err:
+                    print(f"Sensor save hook failed: {hook_err}")
+            else:
+                with open(self._config_file, 'w') as f:
+                    json.dump(configs_data, f)
         except Exception as e:
             print(f"Failed to save sensor configs: {e}")
     
@@ -108,35 +115,61 @@ class SensorManager:
             # No existing config file
             pass
     
-    def add_sensor(self, sensor_id, sensor_type, inputs=None, enabled=True, alias=None):
+    def set_config_save_hook(self, callback):
+        """Register an external persistence hook (e.g., store in device config)."""
+        self._config_save_hook = callback
+
+    def add_sensor(self, sensor_or_id, sensor_type=None, inputs=None, enabled=True, alias=None):
         """Add a new sensor to the system."""
-        sensor_id = str(sensor_id)
-        
-        # Create sensor instance
-        sensor_instance = _create_sensor(sensor_type, inputs or {})
+        # Allow direct SensorConfig objects for convenience
+        if isinstance(sensor_or_id, SensorConfig):
+            config = sensor_or_id
+        else:
+            if not sensor_type:
+                print("Sensor type is required when adding by id")
+                return False
+            config = SensorConfig(sensor_or_id, sensor_type, inputs, enabled, alias)
+
+        sensor_id = str(config.sensor_id)
+
+        # Create sensor instance (re-create if updating existing)
+        sensor_instance = _create_sensor(config.sensor_type, config.inputs or {})
         if sensor_instance is None:
             return False
-        
-        # Create configuration
-        config = SensorConfig(sensor_id, sensor_type, inputs, enabled, alias)
-        
-        # Store sensor and config
+
         self.sensors[sensor_id] = sensor_instance
         self.sensor_configs[sensor_id] = config
-        
-        # Persist to storage
         self._persist_configs()
         return True
+
+    def update_sensor(self, sensor_id, updates):
+        """Update an existing sensor configuration."""
+        sensor_id = str(sensor_id)
+        if sensor_id not in self.sensor_configs:
+            return False
+        current = self.sensor_configs[sensor_id]
+        new_config = SensorConfig(
+            sensor_id=sensor_id,
+            sensor_type=updates.get('sensor_type', current.sensor_type),
+            inputs=updates.get('inputs', current.inputs),
+            enabled=updates.get('enabled', current.enabled),
+            alias=updates.get('alias', current.alias)
+        )
+        return self.add_sensor(new_config)
     
     def remove_sensor(self, sensor_id):
         """Remove a sensor from the system."""
         sensor_id = str(sensor_id)
+        existed = False
         if sensor_id in self.sensors:
             del self.sensors[sensor_id]
+            existed = True
         if sensor_id in self.sensor_configs:
             del self.sensor_configs[sensor_id]
-        self._persist_configs()
-        return True
+            existed = True
+        if existed:
+            self._persist_configs()
+        return existed
     
     def read_sensor(self, sensor_id):
         """Read a single sensor."""
@@ -199,10 +232,7 @@ class SensorManager:
         try:
             for sensor_id, config_data in configs_data.items():
                 config = SensorConfig.from_dict(config_data)
-                sensor_instance = _create_sensor(config.sensor_type, config.inputs)
-                if sensor_instance is not None:
-                    self.sensor_configs[sensor_id] = config
-                    self.sensors[sensor_id] = sensor_instance
+                if self.add_sensor(config):
                     loaded_sensors.append(sensor_id)
         except Exception as e:
             print(f"Error loading sensor configs: {e}")
@@ -241,6 +271,49 @@ class SensorManager:
             elif action == 'disable_sensor':
                 success = self.disable_sensor(command_data['sensor_id'])
                 return {"status": "success" if success else "error"}
+
+            elif action == 'add_sensor':
+                cfg = command_data.get('config') or command_data
+                sensor_id = cfg.get('sensor_id')
+                sensor_type = cfg.get('sensor_type')
+                if not sensor_id or not sensor_type:
+                    return {"status": "error", "error": "sensor_id and sensor_type are required"}
+                added = self.add_sensor(
+                    sensor_id,
+                    sensor_type,
+                    inputs=cfg.get('inputs'),
+                    enabled=cfg.get('enabled', True),
+                    alias=cfg.get('alias')
+                )
+                if added:
+                    return {"status": "success", "sensor": self.sensor_configs[sensor_id].to_dict()}
+                return {"status": "error", "error": f"Failed to add sensor '{sensor_id}'"}
+
+            elif action == 'update_sensor':
+                cfg = command_data.get('config') or {}
+                sensor_id = cfg.get('sensor_id') or command_data.get('sensor_id')
+                if not sensor_id:
+                    return {"status": "error", "error": "sensor_id is required"}
+                success = self.update_sensor(sensor_id, cfg)
+                if success:
+                    return {"status": "success", "sensor": self.sensor_configs[sensor_id].to_dict()}
+                return {"status": "error", "error": f"Failed to update sensor '{sensor_id}'"}
+
+            elif action == 'remove_sensor':
+                sensor_id = command_data.get('sensor_id')
+                if not sensor_id:
+                    return {"status": "error", "error": "sensor_id is required"}
+                removed = self.remove_sensor(sensor_id)
+                if removed:
+                    return {"status": "success", "removed": sensor_id}
+                return {"status": "error", "error": f"Sensor '{sensor_id}' not found"}
+
+            elif action == 'list_sensors':
+                return {
+                    "status": "success",
+                    "sensors": [cfg.to_dict() for cfg in self.sensor_configs.values()],
+                    "count": len(self.sensor_configs)
+                }
             
             else:
                 return {"status": "error", "error": f"Unknown action: {action}"}

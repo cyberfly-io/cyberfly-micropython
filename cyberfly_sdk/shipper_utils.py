@@ -1,9 +1,18 @@
 import network
-import machine
 import time
 import json
 import urequests as rt
 from pact import Lang, Crypto
+try:
+    from platform_compat import reset
+except ImportError:
+    try:
+        import machine
+        def reset():
+            machine.reset()
+    except ImportError:
+        def reset():
+            print("[WARN] Reset not available")
 
 def connect_wifi(ssid, password):
     count = 1
@@ -18,8 +27,8 @@ def connect_wifi(ssid, password):
         count = count +1
         print('Waiting for wifi connection...')
         if count>10:
-            print("Restart esp32")
-            machine.reset()
+            print("Restarting device...")
+            reset()
         time.sleep(1)
 
 def is_cnx_active():

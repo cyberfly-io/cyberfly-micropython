@@ -62,7 +62,15 @@ def time():
 # There's currently no timezone support in MicroPython, and the RTC is set in UTC time.
 def settime():
     t = time()
-    import machine
+    try:
+        from platform_compat import RTC
+    except ImportError:
+        try:
+            import machine
+            RTC = machine.RTC
+        except ImportError:
+            print("[WARN] RTC not available, cannot set time")
+            return
 
     tm = gmtime(t)
-    machine.RTC().datetime((tm[0], tm[1], tm[2], tm[6] + 1, tm[3], tm[4], tm[5], 0))
+    RTC().datetime((tm[0], tm[1], tm[2], tm[6] + 1, tm[3], tm[4], tm[5], 0))
