@@ -86,7 +86,14 @@ class Api:
     
     
     def prepare_exec_cmd(self, pact_code, env_data={}, meta={}, network_id=None,
-                             nonce=time.time(), key_pairs=[]):
+                             nonce=None, key_pairs=[]):
+        # Use RTC time for accurate nonce
+        if nonce is None:
+            try:
+                import cntptime
+                nonce = cntptime.get_rtc_time()
+            except:
+                nonce = time.time()
         kp_array = pact_utils.as_list(key_pairs)
         signers = list(map(pact_utils.mk_signer, kp_array))
         cmd_json = {

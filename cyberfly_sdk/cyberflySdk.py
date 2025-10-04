@@ -35,17 +35,26 @@ class CyberflyClient:
         if HAS_MACHINE:
             try:
                 self.led = Pin(2, Pin.OUT)
+                self.led.off()  # Start with LED off
                 print(f"[INFO] Running on platform: {PLATFORM}")
             except Exception as e:
                 print(f"[WARN] LED init failed: {e}")
                 class _DummyLed:
                     def value(self, *_):
                         return 0
+                    def on(self):
+                        pass
+                    def off(self):
+                        pass
                 self.led = _DummyLed()
         else:
             class _DummyLed:
                 def value(self, *_):
                     return 0
+                def on(self):
+                    pass
+                def off(self):
+                    pass
             self.led = _DummyLed()
         self.device_data = {}
         self.device_id = device_id
@@ -280,10 +289,10 @@ class CyberflyClient:
         if not self.sensor_manager:
             return {"error": "Sensor manager not available"}
         
-        # Check for read_pin_status command with auto-creation
         action = command.get('action')
+        
+        # Handle read_pin_status command with auto-creation
         if action == 'read_pin_status':
-            # Auto-create pin status sensor if not exists
             sensor_id = command.get('sensor_id', 'pin_status')
             if sensor_id not in self.sensor_manager.sensors:
                 print(f"Auto-creating pin status sensor '{sensor_id}'...")
@@ -319,6 +328,57 @@ class CyberflyClient:
                     "action": action
                 }
         
+        # Handle read_system_info command with auto-creation
+        elif action == 'read_system_info':
+            sensor_id = command.get('sensor_id', 'system_info')
+            if sensor_id not in self.sensor_manager.sensors:
+                print(f"Auto-creating system info sensor '{sensor_id}'...")
+                success = self.add_sensor(
+                    sensor_id=sensor_id,
+                    sensor_type="system_info",
+                    inputs={},
+                    alias="System Information Monitor"
+                )
+                if not success:
+                    return {
+                        "status": "error",
+                        "error": "Failed to create system info sensor",
+                        "action": action
+                    }
+            
+            # Read and return system info
+            reading = self.read_sensor(sensor_id)
+            if reading.get('status') == 'success':
+                return {
+                    "status": "success",
+                    "action": action,
+                    "sensor_id": sensor_id,
+                    "data": reading.get('data', {}),
+                    "timestamp": reading.get('timestamp')
+                }
+            else:
+                return {
+                    "status": "error",
+                    "error": reading.get('error', 'Unknown error'),
+                    "action": action
+                }
+        
+        # Handle read_all_sensors command
+        elif action == 'read_all_sensors':
+            readings = self.read_all_sensors()
+            try:
+                import cntptime
+                timestamp = cntptime.get_rtc_time()
+            except:
+                timestamp = time.time()
+            return {
+                "status": "success",
+                "action": action,
+                "count": len(readings),
+                "sensors": readings,
+                "timestamp": timestamp
+            }
+        
         # Process other sensor commands through sensor manager
         return self.sensor_manager.process_command(command)
     
@@ -349,118 +409,6 @@ class CyberflyClient:
         except Exception as e:
             print(f"Failed to load sensor configs: {e}")
     
-    def publish_sensor_reading(self, sensor_id, topic=None):
-        """Publish a sensor reading to the platform."""
-        reading = self.read_sensor(sensor_id)
-        if reading.get('status') == 'success':
-            publish_topic = topic or f"{self.topic}/sensors/{sensor_id}"
-            self.publish(publish_topic, reading)
-            return True
-        return False
-    
-    def publish_all_sensor_readings(self, topic=None):
-        """Publish all sensor readings to the platform."""
-        readings = self.read_all_sensors()
-        if readings:
-            publish_topic = topic or f"{self.topic}/sensors/all"
-            self.publish(publish_topic, {"sensors": readings, "count": len(readings)})
-            return True
-        return False
-    
-    def publish_pin_status(self, pin_sensor_id="pin_status", topic=None):
-        """Publish GPIO pin status to the dashboard."""
-        if not self.sensor_manager:
-            return False
-        
-        try:
-            # Check if pin status sensor exists, create if not
-            if pin_sensor_id not in self.sensor_manager.sensors:
-                print(f"Pin status sensor '{pin_sensor_id}' not found, creating default...")
-                # Create a default pin status sensor for common GPIO pins
-                # These are commonly used pins on ESP32/RP2040 platforms
-                default_pins = [0, 2, 4, 5, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 23]
-                success = self.add_sensor(
-                    sensor_id=pin_sensor_id,
-                    sensor_type="pin_status", 
-                    inputs={"pins": default_pins, "mode": "auto"},
-                    alias="GPIO Pin Status Monitor"
-                )
-                if not success:
-                    print("Failed to create default pin status sensor")
-                    return False
-            
-            # Read pin status
-            reading = self.read_sensor(pin_sensor_id)
-            if reading.get('status') == 'success':
-                publish_topic = topic or f"{self.topic}/dashboard/pin_status"
-                
-                # Format data for dashboard consumption
-                dashboard_data = {
-                    "device_id": self.device_id,
-                    "timestamp": reading['data'].get('timestamp'),
-                    "pin_summary": {
-                        "total_pins": reading['data'].get('total_pins', 0),
-                        "configured_pins": reading['data'].get('configured_pins', 0),
-                        "error_pins": reading['data'].get('error_pins', 0)
-                    },
-                    "pins": reading['data'].get('pins', {}),
-                    "status": "success"
-                }
-                
-                self.publish(publish_topic, dashboard_data)
-                return True
-            else:
-                print(f"Failed to read pin status: {reading.get('error', 'unknown error')}")
-                return False
-                
-        except Exception as e:
-            print(f"Error publishing pin status: {e}")
-            return False
-    
-    def publish_dashboard_summary(self, topic=None):
-        """Publish comprehensive dashboard data including sensors and pin status."""
-        try:
-            # Get all sensor readings
-            sensor_readings = self.read_all_sensors()
-            
-            # Get pin status
-            pin_status = None
-            try:
-                pin_reading = self.read_sensor("pin_status")
-                if pin_reading.get('status') == 'success':
-                    pin_status = pin_reading['data']
-            except:
-                pass  # Pin status sensor may not be configured
-            
-            # Get system info if available
-            system_info = None
-            try:
-                sys_reading = self.read_sensor("system_info")
-                if sys_reading.get('status') == 'success':
-                    system_info = sys_reading['data']
-            except:
-                pass
-            
-            dashboard_data = {
-                "device_id": self.device_id,
-                "timestamp": time.time(),
-                "sensors": {
-                    "count": len(sensor_readings),
-                    "readings": sensor_readings
-                },
-                "pins": pin_status,
-                "system": system_info,
-                "status": "success"
-            }
-            
-            publish_topic = topic or f"{self.topic}/dashboard/summary"
-            self.publish(publish_topic, dashboard_data)
-            return True
-            
-        except Exception as e:
-            print(f"Error publishing dashboard summary: {e}")
-            return False
-
     def read_all_modules(self):
         if not self.modules:
             return {}
@@ -473,11 +421,14 @@ class CyberflyClient:
         print("Set NTP time")
         for attempt in range(max_retries):
             try:
+                print(f"[NTP] Attempt {attempt + 1}/{max_retries}")
                 cntptime.settime()
                 print("NTP time set successfully")
                 return True
             except Exception as e:
+                import sys
                 print(f"NTP attempt {attempt + 1}/{max_retries} failed: {e}")
+                sys.print_exception(e)
                 if attempt < max_retries - 1:
                     time.sleep(2)  # Wait before retry
         print("[WARN] Failed to set NTP time after all retries")
@@ -554,7 +505,11 @@ class CyberflyClient:
         print("Connected")
         self.mqtt_client.subscribe(self.topic)
         api.subscribe(self.topic)
-        self.led.value(1)
+        try:
+            self.led.on()  # Turn LED on to indicate MQTT connected
+            print("LED turned ON (MQTT connected)")
+        except Exception as e:
+            print(f"[WARN] Failed to turn LED on: {e}")
         print("Subscribed to "+self.topic)
 
 

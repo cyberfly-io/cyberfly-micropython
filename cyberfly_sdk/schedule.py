@@ -48,7 +48,11 @@ except ImportError:
 
 def now():
     """Return current Unix timestamp as integer."""
-    return int(time.time())
+    try:
+        import cntptime
+        return int(cntptime.get_rtc_time())
+    except:
+        return int(time.time())
 
 class CancelJob(object):
     """Sentinel class to signal that a job should be canceled.

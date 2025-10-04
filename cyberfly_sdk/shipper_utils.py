@@ -39,8 +39,13 @@ def is_cnx_active():
         print("No internet")
         return False
 
-def default_meta(sender="not real"):
-    return Lang().mk_meta(sender, "1", 0.000001, 80000, time.time()-15, 28800)
+def mk_meta(sender, chain = "1", gas_price = 0.000001, gas_limit = 80000, creation_time = None, ttl = 28800):
+    try:
+        import cntptime
+        current_time = cntptime.get_rtc_time()
+    except:
+        current_time = time.time()
+    return Lang().mk_meta(sender, "1", 0.000001, 80000, current_time-15, 28800)
 
 def get_api_host(network_id):
     if network_id == "testnet04":
@@ -66,7 +71,18 @@ def mqtt_publish(client, topic, cmd):
 
 
 def make_cmd(data, key_pair):
-    data.update({"expiry_time": time.time() + 10})
+    # Add expiry time using RTC for accurate timestamps
+    try:
+        import cntptime
+        current_time = cntptime.get_rtc_time()
+        print(f"[make_cmd] RTC time: {current_time}")
+    except Exception as e:
+        current_time = time.time()
+        print(f"[make_cmd] Fallback time.time(): {current_time}, Error: {e}")
+    
+    data.update({"expiry_time": current_time + 10})
+    print(f"[make_cmd] Expiry time set to: {current_time + 10}")
+    
     signed = Crypto().sign(json.dumps(data), key_pair)
     signed.update({"device_exec": json.dumps(data)})
     return signed

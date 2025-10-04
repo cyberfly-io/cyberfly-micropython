@@ -8,13 +8,21 @@ import gc
 
 class SensorReading:
     """Standardized sensor reading with metadata."""
-    def __init__(self, sensor_id, sensor_type, data=None, timestamp=None, status="success", error=None):
-        self.sensor_id = str(sensor_id)
-        self.sensor_type = str(sensor_type)
-        self.data = data or {}
-        self.timestamp = timestamp or time.time()
-        self.status = str(status)
+    def __init__(self, sensor_id, sensor_type, data, status="success", error=None, timestamp=None):
+        self.sensor_id = sensor_id
+        self.sensor_type = sensor_type
+        self.data = data
+        self.status = status
         self.error = error
+        if timestamp is None:
+            try:
+                import cntptime
+                self.timestamp = cntptime.get_rtc_time()
+            except:
+                import time
+                self.timestamp = time.time()
+        else:
+            self.timestamp = timestamp
     
     def to_dict(self):
         result = {

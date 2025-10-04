@@ -12,7 +12,14 @@ class SensorReading:
         self.sensor_id = str(sensor_id)
         self.sensor_type = str(sensor_type)
         self.data = data or {}
-        self.timestamp = timestamp or time.time()
+        if timestamp is None:
+            try:
+                import cntptime
+                self.timestamp = cntptime.get_rtc_time()
+            except:
+                self.timestamp = time.time()
+        else:
+            self.timestamp = timestamp
         self.status = str(status)
         self.error = error
     

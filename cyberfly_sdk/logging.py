@@ -33,7 +33,12 @@ class LogRecord:
         self.levelno = level
         self.levelname = _level_dict[level]
         self.message = message
-        self.ct = time.time()
+        # Use RTC time for accurate log timestamps
+        try:
+            import cntptime
+            self.ct = cntptime.get_rtc_time()
+        except:
+            self.ct = time.time()
         self.msecs = int((self.ct - int(self.ct)) * 1000)
         self.asctime = None
 

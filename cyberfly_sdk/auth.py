@@ -24,8 +24,15 @@ def check_auth(cmd, device_info):
 def validate_expiry(msg):
     expiry_time = msg.get('expiry_time')
     if expiry_time:
-        now = time.time()
-        print(expiry_time, now)
+        # Use RTC time for accurate expiry validation
+        try:
+            import cntptime
+            now = cntptime.get_rtc_time()
+            print(f"[validate_expiry] RTC time: {now}")
+        except Exception as e:
+            now = time.time()
+            print(f"[validate_expiry] Fallback time.time(): {now}, Error: {e}")
+        print(f"[validate_expiry] Comparing: expiry={expiry_time}, now={now}")
         if now < expiry_time:
             return True
         else:
