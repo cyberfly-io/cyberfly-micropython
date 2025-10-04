@@ -318,29 +318,68 @@ class AnalogInputSensor(BaseSensor):
 # Removed MockDHTSensor - use real DHT22Sensor instead
 
 class SystemInfoSensor(BaseSensor):
-    """System information sensor (memory, uptime, etc.)."""
+    """System information sensor (memory, uptime, platform info, etc.)."""
     
     def __init__(self, inputs=None):
         super().__init__(inputs)
+        self.boot_time = time.time()  # Store boot time for uptime calculation
     
     def read(self):
         """Read system information."""
         try:
             import gc
+            import sys
             gc.collect()
             free_mem = gc.mem_free()
             alloc_mem = gc.mem_alloc()
             total_mem = free_mem + alloc_mem
             
-            uptime = time.time()  # Approximate uptime since boot
+            # Get platform information
+            platform = sys.platform if hasattr(sys, 'platform') else 'unknown'
+            implementation = sys.implementation.name if hasattr(sys, 'implementation') else 'micropython'
+            version = '.'.join(str(v) for v in sys.version_info[:3]) if hasattr(sys, 'version_info') else 'unknown'
             
-            return {
+            # Calculate uptime using RTC time if available
+            try:
+                import cntptime
+                current_time = cntptime.get_rtc_time()
+                # If RTC is synced, calculate actual uptime
+                if current_time > 946684800:  # After 2000-01-01
+                    uptime = time.time()  # Boot-relative uptime
+                else:
+                    uptime = time.time()  # Fall back to boot time
+            except:
+                uptime = time.time()  # Fall back to boot time
+            
+            result = {
                 "free_memory": free_mem,
                 "allocated_memory": alloc_mem,
                 "total_memory": total_mem,
                 "memory_usage_percent": round((alloc_mem / total_mem) * 100, 1),
-                "uptime_seconds": round(uptime, 1)
+                "uptime_seconds": round(uptime, 1),
+                "platform": platform,
+                "implementation": implementation,
+                "version": version
             }
+            
+            # Add frequency info if available
+            try:
+                import machine
+                if hasattr(machine, 'freq'):
+                    result["cpu_freq_mhz"] = machine.freq() // 1000000
+            except:
+                pass
+            
+            # Add unique ID if available
+            try:
+                import machine
+                if hasattr(machine, 'unique_id'):
+                    import binascii
+                    result["unique_id"] = binascii.hexlify(machine.unique_id()).decode()
+            except:
+                pass
+            
+            return result
         except Exception as e:
             raise Exception(f"Failed to read system info: {e}")
 

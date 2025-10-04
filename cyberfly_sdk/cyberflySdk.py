@@ -62,10 +62,15 @@ class CyberflyClient:
         self.caller = self.default_caller
         self.mqtt_server = node_url.split("//")[1]
         self.node_url = node_url
-        self.mqtt_client = MQTTClient(device_id, self.mqtt_server, port=31004)
+        self.mqtt_client = MQTTClient(device_id, self.mqtt_server, port=31004, keepalive=60)
         self.topic = device_id
         self.mqtt_client.set_callback(self.on_received)
         self.device_info = {}
+        self.last_ping = 0
+        self.ping_interval = 30000  # Ping every 30 seconds
+        self.last_msg_time = 0
+        self.connection_timeout = 120000  # 2 minutes timeout
+        self.reconnect_count = 0
         # optional module system for dynamic read/execute
         try:
             self.modules = ModuleRegistry()
@@ -433,6 +438,67 @@ class CyberflyClient:
                     time.sleep(2)  # Wait before retry
         print("[WARN] Failed to set NTP time after all retries")
         return False
+    
+    def health_check(self):
+        """Perform a health check and return system status."""
+        import gc
+        import network
+        
+        status = {
+            "wifi_connected": False,
+            "mqtt_connected": False,
+            "free_memory": 0,
+            "reconnect_count": self.reconnect_count,
+            "last_msg_age_ms": 0
+        }
+        
+        try:
+            # Check WiFi
+            wlan = network.WLAN(network.STA_IF)
+            status["wifi_connected"] = wlan.isconnected()
+            
+            # Check MQTT (indirect check via last message time)
+            now = time.ticks_ms()
+            status["last_msg_age_ms"] = time.ticks_diff(now, self.last_msg_time)
+            status["mqtt_connected"] = status["last_msg_age_ms"] < self.connection_timeout
+            
+            # Memory status
+            gc.collect()
+            status["free_memory"] = gc.mem_free()
+            
+            # Check for potential issues
+            if status["free_memory"] < 10000:
+                print("[WARN] Low memory: {status['free_memory']} bytes")
+            
+            if not status["wifi_connected"]:
+                print("[WARN] WiFi disconnected")
+            
+            if not status["mqtt_connected"]:
+                print("[WARN] MQTT appears disconnected")
+                
+        except Exception as e:
+            print(f"[ERROR] Health check failed: {e}")
+        
+        return status
+
+    def maintain_connection(self):
+        """
+        Main loop helper for maintaining connections.
+        Call this in your main loop along with check_msg().
+        
+        Example:
+            while True:
+                client.check_msg()
+                client.maintain_connection()
+                time.sleep_ms(100)
+        """
+        # Perform periodic health checks
+        if hasattr(self, '_last_health_check'):
+            if time.ticks_diff(time.ticks_ms(), self._last_health_check) > 60000:  # Every minute
+                status = self.health_check()
+                self._last_health_check = time.ticks_ms()
+        else:
+            self._last_health_check = time.ticks_ms()
 
     def update_data(self, key: str, value):
         self.device_data.update({key: value})
@@ -450,16 +516,74 @@ class CyberflyClient:
             print("trying to connect mqtt server")
             self.mqtt_client.connect()
             self.on_connect()
+            self.last_ping = time.ticks_ms()
+            self.last_msg_time = time.ticks_ms()
+            self.reconnect_count = 0
+            print("[MQTT] Connected successfully")
         except Exception as e:
-            print(e)
+            print(f"[MQTT] Connection failed: {e}")
+            self.reconnect_count += 1
 
     def check_msg(self):
+        """Check for messages and maintain connection health."""
         try:
-           self.mqtt_client.check_msg()
+            # Check for incoming messages
+            self.mqtt_client.check_msg()
+            
+            # Send keepalive ping if needed
+            now = time.ticks_ms()
+            if time.ticks_diff(now, self.last_ping) > self.ping_interval:
+                try:
+                    self.mqtt_client.ping()
+                    self.last_ping = now
+                    print("[MQTT] Keepalive ping sent")
+                except Exception as ping_error:
+                    print(f"[MQTT] Ping failed: {ping_error}")
+                    raise  # Trigger reconnection
+            
+            # Check for connection timeout (no messages received)
+            if time.ticks_diff(now, self.last_msg_time) > self.connection_timeout:
+                print(f"[MQTT] No messages for {self.connection_timeout/1000}s - reconnecting")
+                raise Exception("Connection timeout")
+                
         except Exception as e:
-            self.connect_wifi(self.ssid, self.wifi_password)
-            self.mqtt_client.disconnect()
+            print(f"[MQTT] Error in check_msg: {e}")
+            self._reconnect()
+    
+    def _reconnect(self):
+        """Handle reconnection with exponential backoff."""
+        try:
+            print(f"[MQTT] Reconnection attempt {self.reconnect_count + 1}")
+            
+            # Disconnect cleanly
+            try:
+                self.mqtt_client.disconnect()
+            except:
+                pass
+            
+            # Check WiFi connection
+            import network
+            wlan = network.WLAN(network.STA_IF)
+            if not wlan.isconnected():
+                print("[WiFi] Connection lost, reconnecting...")
+                self.connect_wifi(self.ssid, self.wifi_password)
+            
+            # Exponential backoff (max 30 seconds)
+            delay = min(2 ** self.reconnect_count, 30)
+            print(f"[MQTT] Waiting {delay}s before reconnect...")
+            time.sleep(delay)
+            
+            # Try to reconnect MQTT
             self.connect_mqtt()
+            
+            # Garbage collect to free memory
+            import gc
+            gc.collect()
+            print(f"[Memory] Free: {gc.mem_free()} bytes")
+            
+        except Exception as e:
+            print(f"[MQTT] Reconnection failed: {e}")
+            self.reconnect_count += 1
 
     def process_data(self):
         pass
@@ -514,6 +638,9 @@ class CyberflyClient:
 
 
     def on_received(self, topic, msg):
+        # Update last message time
+        self.last_msg_time = time.ticks_ms()
+        
         json_string = msg.decode("utf-8")
         if isinstance(json_string, str):
             json_string = json.loads(json_string)
@@ -555,9 +682,15 @@ class CyberflyClient:
                         signed = shipper_utils.make_cmd(payload, self.key_pair)
                         shipper_utils.mqtt_publish(self.mqtt_client, response_topic, signed)
                 except Exception as e:
-                    signed = shipper_utils.make_cmd({"info": "error"}, self.key_pair)
-                    shipper_utils.mqtt_publish(self.mqtt_client, response_topic, signed)
-                    print(e)
+                    import sys
+                    print(f"[ERROR] Command execution failed: {e}")
+                    sys.print_exception(e)
+                    if response_topic:
+                        try:
+                            signed = shipper_utils.make_cmd({"info": "error", "error": str(e)}, self.key_pair)
+                            shipper_utils.mqtt_publish(self.mqtt_client, response_topic, signed)
+                        except:
+                            pass
             else:
                 print(self.device_info)
                 print("auth failed")
